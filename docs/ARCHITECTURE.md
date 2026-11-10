@@ -189,6 +189,7 @@ erDiagram
 هر ۳۰ ثانیه:
 
 1. `expireHolds` — نوبت‌های `held` که `heldUntil` گذشته‌اند → `expired` (بازه آزاد می‌شود).
+1. `archiveFinishedRemovals` — خدمات `removing` که نوبت آینده ندارند → `archived`.
 2. `sendDueReminders` — یادآوری پیامکی یک ساعت قبل از نوبت تاییدشده (کلید یکتا).
 3. `markNoShows` — ۵ دقیقه بعد از زمان پیش‌بینی‌شده → `noShow`، با احترام به `noShowHold`.
 4. پردازش حداکثر ۲۰ پیام از `sms:queue`.

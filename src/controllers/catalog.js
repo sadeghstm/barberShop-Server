@@ -25,12 +25,25 @@ exports.createCatalogService = async (req, res) => {
 
 /** POST /api/services/:serviceId/removal — درخواست حذف (ادمین) */
 exports.requestRemoval = async (req, res) => {
+  // «تایید صریح» قبل از شروع چرخه حذف (۵.۵)
+  if (req.body?.confirm !== true) {
+    throw new AppError('برای شروع حذف خدمت، تایید صریح لازم است (confirm: true)', {
+      statusCode: 422,
+      code: 'CONFIRMATION_REQUIRED',
+    });
+  }
   const service = await catalogService.requestCatalogRemoval({ actor: req.auth, serviceId: req.params.serviceId });
   res.json({ service });
 };
 
 /** POST /api/services/:serviceId/archive — آرشیو نهایی (ادمین) */
 exports.archive = async (req, res) => {
+  if (req.body?.confirm !== true) {
+    throw new AppError('برای آرشیو خدمت، تایید صریح لازم است (confirm: true)', {
+      statusCode: 422,
+      code: 'CONFIRMATION_REQUIRED',
+    });
+  }
   const service = await catalogService.archiveCatalogService({ actor: req.auth, serviceId: req.params.serviceId });
   res.json({ service });
 };

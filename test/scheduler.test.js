@@ -25,6 +25,9 @@ stubModule('services/appointment', {
     return 1;
   },
 });
+stubModule('services/catalog', {
+  archiveFinishedRemovals: async () => 0,
+});
 stubModule('services/smsQueue', {
   processNextSms: async () => {
     calls.sms += 1;

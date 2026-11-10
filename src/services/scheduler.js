@@ -6,6 +6,7 @@
 
 const { logger } = require('../helpers/logger');
 const appointmentService = require('./appointment');
+const catalogService = require('./catalog');
 const smsQueue = require('./smsQueue');
 
 const TICK_MS = 30_000;
@@ -21,6 +22,10 @@ async function tick() {
 
     const noShows = await appointmentService.markNoShows();
     if (noShows > 0) logger.info({ noShows }, 'appointments marked as noShow');
+
+    // خدماتی که «در حال حذف» هستند و نوبت آینده ندارند، آرشیو می‌شوند (۵.۵)
+    const archived = await catalogService.archiveFinishedRemovals();
+    if (archived > 0) logger.info({ archived }, 'services archived');
 
     // یادآوری یک ساعت قبل (کلید یکتای پیامک جلوی تکرار را می‌گیرد)
     const reminders = await appointmentService.sendDueReminders();

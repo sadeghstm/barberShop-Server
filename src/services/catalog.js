@@ -117,6 +117,44 @@ async function archiveCatalogService({ actor, serviceId }) {
   return service;
 }
 
+/**
+ * آرشیو خودکار خدماتی که در وضعیت «در حال حذف» هستند و دیگر نوبت آینده‌ای ندارند (۵.۵).
+ * توسط زمان‌بند دوره‌ای صدا زده می‌شود.
+ */
+async function archiveFinishedRemovals() {
+  const removing = await ServiceCatalog.find({ status: CATALOG_STATUS.REMOVING });
+  let archived = 0;
+  for (const service of removing) {
+    const future = await countFutureAppointmentsForService(service._id);
+    if (future > 0) continue;
+    const before = service.toObject();
+    service.status = CATALOG_STATUS.ARCHIVED;
+    service.archivedAt = new Date();
+    await service.save();
+    await auditService.record({
+      actor: { role: 'system' },
+      action: 'catalog.archive',
+      entityType: 'serviceCatalog',
+      entityId: service._id,
+      before,
+      after: service,
+      meta: { auto: true },
+    });
+    archived += 1;
+  }
+  return archived;
+}
+
+/** تعداد نوبت‌های آینده کل کاتالوگ برای یک خدمت (هر آرایشگر). */
+async function countFutureAppointmentsForService(serviceId) {
+  const Appointment = require('../models/Appointment');
+  return Appointment.countDocuments({
+    serviceId,
+    status: { $in: ['held', 'confirmed', 'arrived', 'inProgress'] },
+    bookedEnd: { $gt: new Date() },
+  });
+}
+
 /** خدمات یک آرایشگر (برای پنل و برای صفحه رزرو). */
 async function listBarberServices({ barberId, shopId, onlyActive = false }) {
   await getActiveBarberOrFail(barberId, shopId);
@@ -323,4 +361,5 @@ module.exports = {
   decideServiceRequest,
   listServiceRequests,
   getActiveBarberOrFail,
+  archiveFinishedRemovals,
 };

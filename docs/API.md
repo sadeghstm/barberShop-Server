@@ -81,8 +81,8 @@
 |---|---|---|---|
 | GET | `/` | عمومی | کاتالوگ (`?q=` جستجو) |
 | POST | `/` | ادمین/سوپر ادمین | `{ title, description?, isDefault? }` |
-| POST | `/:serviceId/removal` | ادمین | درخواست حذف: `active → removing` (نوبت جدید بسته) یا `archived` اگر نوبت آینده نباشد |
-| POST | `/:serviceId/archive` | ادمین | آرشیو نهایی (بدون نوبت آینده) |
+| POST | `/:serviceId/removal` | ادمین | `{ confirm: true }` — درخواست حذف: `active → removing` (نوبت جدید بسته) یا `archived` اگر نوبت آینده نباشد |
+| POST | `/:serviceId/archive` | ادمین | `{ confirm: true }` — آرشیو نهایی (بدون نوبت آینده) |
 | GET | `/requests` | ادمین | `?status=pending` |
 | POST | `/requests/:requestId/decide` | ادمین | `{ approve, rejectReason?, mergeIntoServiceId? }` |
 
