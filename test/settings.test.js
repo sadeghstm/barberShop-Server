@@ -5,6 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { DEFAULTS } = require('../src/services/settings');
+const Appointment = require('../src/models/Appointment');
 const { TRANSITIONS } = require('../src/services/appointment');
 
 test('پیش‌فرض‌های تنظیمات با سند هم‌خوان است', () => {
@@ -29,4 +30,13 @@ test('ماشین وضعیت نوبت: فقط گذرهای مجاز سند', () =
   }
   // «موقت» مستقیم به «حاضر شد» نمی‌رود (پرداخت تایید اول لازم است)
   assert.ok(!TRANSITIONS.held.includes('arrived'));
+});
+
+test('فیلدهای تغییرناپذیر نوبت: زمان رزرو و snapshot قیمت/مدت', () => {
+  const schema = Appointment.schema;
+  for (const field of ['bookedStart', 'bookedEnd', 'priceSnapshot', 'durationSnapshot', 'depositAmount', 'dayKey']) {
+    assert.equal(schema.path(field).options.immutable, true, field);
+  }
+  // زمان پیش‌بینی‌شده تغییرپذیر است (تاخیر)
+  assert.notEqual(schema.path('estimatedStart').options.immutable, true);
 });
