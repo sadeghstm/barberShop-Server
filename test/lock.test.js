@@ -25,8 +25,8 @@ test('قفل دوم برای همان آرایشگر و روز رد می‌شو�
 
 test('آزادسازی با توکن اشتباه قفل دیگری را باز نمی‌کند', async () => {
   const release = await acquireBookingLock('barber-2', '2026-11-10');
-  // قفل منقضی می‌شود و دیگری آن را می‌گیرد
-  redis.now += 6;
+  // قفل با TTL (۱۰ ثانیه) منقضی می‌شود و دیگری آن را می‌گیرد
+  redis.now += 11;
   const second = await acquireBookingLock('barber-2', '2026-11-10');
   await release(); // نباید قفل دوم را آزاد کند
   assert.ok(redis.store.get(lockKey('barber-2', '2026-11-10')));
