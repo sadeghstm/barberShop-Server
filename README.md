@@ -1,0 +1,159 @@
+# سامانه نوبت‌دهی و مدیریت صف آرایشگاه (سرور)
+
+بک‌اند سامانه چند‌آرایشگاهی نوبت‌دهی، مبتنی بر **Node.js + Express 5 + MongoDB (Mongoose) + Redis**.
+همه کدها **JavaScript** هستند (بدون TypeScript). فرانت‌اند (Vue، فارسی/RTL، تاریخ شمسی) در پروژه‌ای
+جداگانه و در گام بعدی ساخته می‌شود؛ این مخزن فقط سرور است.
+
+> این مرحله: **فاز ۱ — هسته نوبت‌دهی** بر اساس سند طراحی.
+> تمام زمان‌ها در دیتابیس **UTC** ذخیره می‌شوند و `dayKey` به شکل `YYYY-MM-DD` **به وقت تهران** نگه داشته
+> می‌شود تا «همان روز» بدون محاسبه منطقه زمانی پرس‌وجو شود. تبدیل به تاریخ شمسی در کلاینت انجام می‌شود.
+
+---
+
+## ۱) اجرا
+
+```bash
+cp .env.example .env      # مقادیر MONGO_URI و REDIS_URL را تنظیم کنید
+npm install
+npm run seed              # کاتالوگ پیش‌فرض خدمات + لیبل‌های نظرسنجی (idempotent)
+npm run create-superadmin -- 09121234567   # ساخت اولین سوپر ادمین
+npm run dev               # اجرا با watch  (production: npm start)
+npm test                  # ۱۲۹ تست، بدون نیاز به مونگو/ردیس
+```
+
+پیش‌نیاز: Node.js ≥ 20.12، MongoDB ≥ 6 (برای `$in` در ایندکس جزئی)، Redis.
+
+در `development` کد OTP ثابت `12345` است (`DEV_OTP_CODE`) و در `production` همیشه تصادفی تولید می‌شود.
+
+---
+
+## ۲) ساختار پوشه‌ها
+
+```
+src/
+  app.js, server.js        زنجیره middleware و بوت‌استرپ (اتصال‌ها، seed، زمان‌بند، خاموشی تمیز)
+  config.js                خواندن/اعتبارسنجی env (fail-fast)
+  constants/               enums وضعیت‌ها، نقش‌ها، الگوهای زمان
+  models/                  مدل‌های Mongoose (تعریف واحد مدل‌ها همین‌جاست)
+  modules/*/               نسخه‌های قبلی مدل‌ها؛ اکنون فقط به src/models ارجاع می‌دهند
+  middlewares/             requestId، لاگر، audit(req.audit)، authenticate/optionalAuth/requireRole/requireShopAccess، errorHandler
+  helpers/                 AppError، زمان تهران (time.js)، شکل‌دهی پاسخ (serialize.js)، لاگر، موبایل
+  services/                منطق دامنه: availability، appointment، lock، wallet، settings، shop، barber،
+                           catalog، survey، referral، admin، smsQueue، scheduler، seed، audit، otp، session، user
+  controllers/             لایه HTTP نازک (اعتبارسنجی ورودی + فراخوانی سرویس)
+  routes/                  مسیرها (index.js همه را سوار می‌کند)
+test/                      تست‌ها با node:test (بدون دیتابیس؛ مدل‌های ساختگی)
+scripts/                   createSuperAdmin.js، seed.js
+docs/API.md                مستند کامل API
+```
+
+---
+
+## ۳) نقش‌ها
+
+| نقش | منبع | توانایی |
+|---|---|---|
+| `customer` | روی سند User (پیش‌فرض) | رزرو، پرداخت بیعانه، لغو، نظرسنجی، کیف پول، کد معرف |
+| `barber` | سند فعال `barbers` | تابلوی روز خودش، حاضر شد/شروع/تکمیل، درخواست لغو، تنظیم خدمات خودش |
+| `shopOwner` | سند `barbers` با `isOwner:true` | همه امور آرایشگاه: ساعت کاری، تعطیلی، کارکنان، خدمات همه آرایشگران |
+| `admin` | روی سند User | ادمین پلتفرم: پرداخت/بازگشت وجه، کاربران، لاگ‌ها، آمار، اجرای دستی jobها |
+| `superAdmin` | روی سند User (`npm run create-superadmin`) | + تنظیمات سراسری و تغییر نقش‌ها |
+
+`shopOwner` و `barber` روی سند کاربر ذخیره **نمی‌شوند**؛ از روی `barbers` محاسبه می‌شوند
+(`src/helpers/roles.js`). هر کاربر فقط در یک آرایشگاه آرایشگر فعال است و هر آرایشگاه یک مالک فعال دارد
+(ایندکس یکتای جزئی در مدل `Barber`).
+
+---
+
+## ۴) قواعد هسته نوبت‌دهی
+
+- **رزرو بازه‌ای است، نه اسلات از پیش ساخته‌شده**؛ اسلات‌ها با تابع خالص
+  `services/availability.js` و روی شبکه **۵ دقیقه‌ای** محاسبه می‌شوند.
+- نوبت آنلاین باید حداقل **۱۵ دقیقه** بعد از «الان» شروع شود (`minBookingLeadMinutes`) و کامل داخل یک
+  بازه ساعت کاری جا شود؛ روز تعطیل هیچ اسلاتی ندارد.
+- هنگام رزرو، **قفل کوتاه ردیس** برای کلید `lock:booking:{barberId}:{dayKey}` گرفته می‌شود؛ داخل قفل
+  بررسی هم‌پوشانی در مونگو انجام و نوبت «موقت» (`held`) با `heldUntil` = الان + ۱۰ دقیقه ثبت می‌شود.
+  آزادسازی قفل با اسکریپت Lua و توکن یکتا انجام می‌شود (فقط صاحب قفل آزاد می‌کند).
+- هر مشتری هم‌زمان فقط **یک موقت فعال** دارد؛ موقت‌های منقضی هر ۳۰ ثانیه پاک‌سازی می‌شوند.
+- ماشین وضعیت: `held → confirmed → arrived → inProgress → completed` و شاخه‌های
+  `expired` / `cancelled` / `noShow`. گذرهای غیرمجاز ۴۰۹ می‌گیرند (`TRANSITIONS` در `services/appointment.js`).
+- پرداخت **شبیه‌سازی‌شده** است: موفق ⇢ نوبت خودکار `confirmed`. بیعانه = `depositPercent`٪ قیمت
+  (پیش‌فرض ۱۵٪) و می‌تواند بخشی از کیف پول + بخشی درگاه باشد.
+- **مشتری حضوری** مستقیم `arrived` ثبت می‌شود و در اولین جای خالی از «الان» به بعد می‌نشیند؛ جای نوبت
+  سوخته (`noShow`) را هم می‌تواند بگیرد ولی هرگز نوبت تاییدشده آنلاین را عقب نمی‌اندازد.
+- **عدم حضور خودکار**: ۵ دقیقه بعد از زمان پیش‌بینی‌شده فعلی، مگر آرایشگر `noShowHold` را فعال کند.
+- **محاسبه مجدد زمان پیش‌بینی‌شده** بعد از هر تغییر (`estimatedStart = max(bookedStart, پایان قبلی)`;
+  هرگز زودتر از زمان رزرو) و پیامک تاخیر اگر تغییر ≥ آستانه باشد.
+- **لغو**: مشتری بیش از ۲ ساعت قبل ⇢ بازگشت کامل بیعانه به کیف پول. درخواست لغو از سمت آرایشگر فقط با
+  موافقت مشتری اجرا می‌شود (و بازگشت کامل می‌گیرد).
+- **کیف پول** فقط از بازگشت بیعانه و پورسانت معرفی پر می‌شود و برای پرداخت بیعانه خرج می‌شود؛ همه تراکنش‌ها
+  `idempotencyKey` یکتا دارند (`commission:{appointmentId}`، `commission-reversal:{appointmentId}`، ...).
+- **پیامک** فقط از صف ردیس (`sms:queue`) با کلید یکتا؛ شکست پیامک نوبت را لغو نمی‌کند.
+- **auditLogs فقط افزودنی** است؛ هر عملیات حساس با actor/role/action/entity/before/after ثبت می‌شود.
+- تغییر ساعت کاری/تعطیلی که نوبت‌های موجود را بی‌اعتبار کند **رد می‌شود** (فهرست نوبت‌های متداخل در خطا).
+
+---
+
+## ۵) API
+
+مستند کامل: [`docs/API.md`](docs/API.md). خلاصه گروه‌ها:
+
+| گروه | مسیر پایه |
+|---|---|
+| سلامت | `GET /health`، `GET /health/ready` |
+| احراز هویت | `/api/auth` (send-otp, verify, logout, me) |
+| آرایشگاه‌ها | `/api/shops` (فهرست عمومی، صفحه رزرو، پنل مالک، ساعت کاری، تعطیلی، کارکنان، مشتری حضوری) |
+| نوبت‌ها | `/api/appointments` (availability زیرمجموعه shops، hold، pay، cancel، arrived/start/complete، survey) |
+| آرایشگر | `/api/barbers/:barberId/board`، `.../survey-stats` |
+| کاتالوگ خدمات | `/api/services` (عمومی + ادمین) و `/api/shops/:shopId/barbers/:barberId/services` |
+| نظرسنجی | `/api/surveys/labels` |
+| ادمین | `/api/admin` (settings، payments/refunds، users، audit-logs، stats، jobs) |
+| من | `/api/me` (barber، referral، wallet) |
+
+نمونه جریان رزرو:
+
+```bash
+# ۱) زمان‌های آزاد
+GET /api/shops/{shopId}/barbers/{barberId}/availability?serviceId={id}&dayKey=2026-11-12
+# ۲) ساخت نوبت موقت (۱۰ دقیقه)
+POST /api/appointments/hold   { "shopId": "...", "barberId": "...", "serviceId": "...", "start": "2026-11-12T06:30:00.000Z" }
+# ۳) پرداخت شبیه‌سازی‌شده بیعانه  → خودکار confirmed
+POST /api/appointments/{id}/pay  { "useWallet": true, "idempotencyKey": "pay:..." }
+```
+
+---
+
+## ۶) متغیرهای محیطی
+
+| کلید | پیش‌فرض (development) | توضیح |
+|---|---|---|
+| `NODE_ENV` | `development` | `development` / `test` / `production` |
+| `PORT` | `3000` | پورت HTTP |
+| `MONGO_URI` | `mongodb://127.0.0.1:27017/barbershop` | در production الزامی |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | در production الزامی |
+| `CORS_ORIGIN` | `http://localhost:5173` | آدرس فرانت Vue (با کوکی) |
+| `SESSION_TTL_DAYS` | `7` | مدت اعتبار نشست |
+| `DEV_OTP_CODE` | `12345` | فقط development/test |
+| `BODY_LIMIT` / `TRUST_PROXY` / `LOG_LEVEL` / `SHUTDOWN_TIMEOUT_MS` | — | مانند `.env.example` |
+
+تنظیمات کسب‌وکار (بیعانه، grace عدم حضور، hold، آستانه پیامک تاخیر، سقف ساعت لغو، درصد پورسانت) در
+کالکشن `settings` با کلید `global` است و با `PUT /api/admin/settings` (فقط سوپر ادمین) عوض می‌شود.
+
+---
+
+## ۷) تست
+
+```bash
+npm test
+```
+
+۱۲۹ تست با `node:test`: زمان تهران، محاسبه اسلات‌ها، قفل ردیس، صف پیامک، شکل پاسخ‌ها، تنظیمات و ماشین
+وضعیت، مدل‌ها، و **جریان کامل رزرو→پرداخت→لغو** با مدل‌های در حافظه (بدون مونگو/ردیس).
+
+---
+
+## ۸) گام بعدی
+
+- فرانت‌اند Vue (پروژه جدا؛ فارسی RTL، تقویم جلالی، همین API).
+- اتصال درگاه پرداخت واقعی به‌جای `mock` و سرویس پیامک واقعی پشت `smsQueue.processNextSms`.
+- داشبورد گزارش‌های پیشرفته (فاز ۲/۳ سند) و استعلام پروانه کسب.

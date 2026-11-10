@@ -62,4 +62,23 @@ function requireShopAccess(paramName = 'shopId') {
   };
 }
 
-module.exports = { COOKIE_NAME, authenticate, requireRole, requireShopAccess };
+/**
+ * مثل authenticate ولی برای مسیرهای عمومی: اگر کاربر وارد نشده باشد req.auth=null می‌ماند
+ * و درخواست رد نمی‌شود (مثلاً نمایش قیمت فقط برای کاربر واردشده، بخش ۵.۸).
+ */
+async function optionalAuth(req, res, next) {
+  const token = req.cookies?.[COOKIE_NAME];
+  if (!token) {
+    req.auth = null;
+    return next();
+  }
+  try {
+    await authenticate(req, res, () => {});
+    return next();
+  } catch {
+    req.auth = null;
+    return next();
+  }
+}
+
+module.exports = { COOKIE_NAME, authenticate, optionalAuth, requireRole, requireShopAccess };

@@ -5,10 +5,19 @@ const { logger } = require('./helpers/logger');
 const { connectMongo, disconnectMongo } = require('./db/mongo');
 const { connectRedis, closeRedis } = require('./db/redis');
 const app = require('./app');
+const scheduler = require('./services/scheduler');
+const { ensureDefaultCatalog, ensureDefaultSurveyLabels } = require('./services/seed');
 
 async function main() {
   await connectMongo();
   await connectRedis();
+
+  // داده‌های پایه (کاتالوگ پیش‌فرض خدمات و لیبل‌های نظرسنجی) — idempotent است
+  await ensureDefaultCatalog().catch((err) => logger.error({ err }, 'catalog seed failed'));
+  await ensureDefaultSurveyLabels().catch((err) => logger.error({ err }, 'survey label seed failed'));
+
+  // کارهای دوره‌ای: انقضای موقت‌ها، عدم حضور خودکار، صف پیامک
+  scheduler.start();
 
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.env }, 'server listening');
@@ -28,6 +37,7 @@ async function main() {
     forceTimer.unref();
 
     try {
+      scheduler.stop();
       await new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
         server.closeIdleConnections?.();
