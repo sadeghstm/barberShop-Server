@@ -1,0 +1,23 @@
+{
+  "name": "barbershop-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API سامانه نوبت‌دهی و مدیریت صف آرایشگاه مردانه",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "create-superadmin": "node scripts/createSuperAdmin.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "express": "^5.1.0",
+    "ioredis": "^5.4.1",
+    "mongoose": "^8.9.0"
+  }
+}
