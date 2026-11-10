@@ -5,7 +5,8 @@ const { GRID_MINUTES } = require('../constants/time');
 
 const { Schema } = mongoose;
 
-const isInt = { validator: Number.isInteger, message: '{PATH} must be an integer' };
+// null یعنی «هنوز تعیین نشده» (۵.۵)؛ پس اعتبارسنجی عددی باید null را بپذیرد
+const isInt = { validator: (v) => v == null || Number.isInteger(v), message: '{PATH} must be an integer' };
 
 /**
  * فعال‌سازی یک خدمت توسط آرایشگر، با قیمت و مدت خودش (۵.۵). تا قبل از تعیین هر دو، رزرو‌پذیر نیست:
@@ -26,16 +27,20 @@ const barberServiceSchema = new Schema(
       max: 480,
       validate: [isInt, { validator: (v) => v == null || v % GRID_MINUTES === 0, message: 'durationMinutes must be a multiple of 5' }],
     },
-    isActive: { type: Boolean, default: false },
+    isActive: {
+      type: Boolean,
+      default: false,
+      // فعال‌سازی فقط وقتی قیمت و مدت تعیین شده باشد (قاعده در سطح فیلد تا validateSync هم آن را ببیند)
+      validate: {
+        validator(value) {
+          return !value || (this.price != null && this.durationMinutes != null);
+        },
+        message: 'price and durationMinutes must be set before activating a service',
+      },
+    },
   },
   { collection: 'barberServices', timestamps: true, versionKey: false },
 );
-
-barberServiceSchema.pre('validate', function requirePriceWhenActive() {
-  if (this.isActive && (this.price == null || this.durationMinutes == null)) {
-    this.invalidate('isActive', 'price and durationMinutes must be set before activating a service');
-  }
-});
 
 barberServiceSchema.index({ barberId: 1, serviceId: 1 }, { unique: true });
 barberServiceSchema.index({ shopId: 1, serviceId: 1, isActive: 1 });

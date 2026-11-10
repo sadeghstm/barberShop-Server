@@ -65,14 +65,43 @@ function createFakeRedis() {
     },
     async set(key, value, ...opts) {
       let ex = null;
+      let px = null;
       let nx = false;
       for (let i = 0; i < opts.length; i += 1) {
         if (opts[i] === 'EX') ex = opts[(i += 1)];
+        if (opts[i] === 'PX') px = opts[(i += 1)];
         if (opts[i] === 'NX') nx = true;
       }
       if (nx && fake._live(key)) return null;
-      store.set(key, { value: String(value), expiresAt: ex === null ? null : fake.now + ex });
+      // PX میلی‌ثانیه است؛ زمان ساختگی fake با ثانیه کار می‌کند
+      const ttlSeconds = ex !== null ? ex : px !== null ? px / 1000 : null;
+      store.set(key, { value: String(value), expiresAt: ttlSeconds === null ? null : fake.now + ttlSeconds });
       return 'OK';
+    },
+    async rpush(key, ...values) {
+      const e = fake._live(key);
+      const list = e ? JSON.parse(e.value) : [];
+      list.push(...values);
+      store.set(key, { value: JSON.stringify(list), expiresAt: e?.expiresAt ?? null });
+      return list.length;
+    },
+    async lpop(key) {
+      const e = fake._live(key);
+      if (!e) return null;
+      const list = JSON.parse(e.value);
+      const first = list.shift() ?? null;
+      if (list.length === 0) store.delete(key);
+      else store.set(key, { value: JSON.stringify(list), expiresAt: e.expiresAt });
+      return first;
+    },
+    // فقط اسکریپت آزادسازی قفل را پشتیبانی می‌کند (get + del مشروط)
+    async eval(_script, _numKeys, key, token) {
+      const e = fake._live(key);
+      if (e && e.value === String(token)) {
+        store.delete(key);
+        return 1;
+      }
+      return 0;
     },
     async get(key) {
       return fake._live(key)?.value ?? null;

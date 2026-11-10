@@ -8,17 +8,23 @@ const { Schema } = mongoose;
 const referralSchema = new Schema(
   {
     referrerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, immutable: true },
-    refereeId: { type: Schema.Types.ObjectId, ref: 'User', required: true, immutable: true },
+    refereeId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      immutable: true,
+      // خودمعرفی ممنوع (۵.۷)
+      validate: {
+        validator(value) {
+          return !this.referrerId || !value || !this.referrerId.equals(value);
+        },
+        message: 'self-referral is not allowed',
+      },
+    },
     code: { type: String, required: true, immutable: true },
   },
   { collection: 'referrals', timestamps: { createdAt: true, updatedAt: false }, versionKey: false },
 );
-
-referralSchema.pre('validate', function noSelf() {
-  if (this.referrerId && this.refereeId && this.referrerId.equals(this.refereeId)) {
-    this.invalidate('refereeId', 'self-referral is not allowed');
-  }
-});
 
 referralSchema.index({ refereeId: 1 }, { unique: true });
 referralSchema.index({ referrerId: 1, createdAt: -1 });

@@ -12,7 +12,8 @@ const {
 
 const { Schema } = mongoose;
 
-const isInt = { validator: Number.isInteger, message: '{PATH} must be an integer' };
+// null یعنی «تعیین نشده» است (مثل finalPrice تا قبل از تکمیل)؛ پس null پذیرفته می‌شود
+const isInt = { validator: (v) => v == null || Number.isInteger(v), message: '{PATH} must be an integer' };
 const money = (extra = {}) => ({ type: Number, min: 0, validate: isInt, ...extra });
 const ref = (to, extra = {}) => ({ type: Schema.Types.ObjectId, ref: to, ...extra });
 
@@ -29,23 +30,94 @@ const appointmentSchema = new Schema(
     shopId: ref('Shop', { required: true, immutable: true }),
     barberId: ref('Barber', { required: true, immutable: true }),
     serviceId: ref('ServiceCatalog', { required: true, immutable: true }),
-    customerId: ref('User', { default: null, immutable: true }),
-    walkInName: { type: String, trim: true, maxlength: 80, default: null, immutable: true },
+    customerId: ref('User', {
+      default: null,
+      immutable: true,
+      validate: {
+        validator(value) {
+          return this.source !== APPOINTMENT_SOURCE.ONLINE || Boolean(value);
+        },
+        message: 'online appointment requires customerId',
+      },
+    }),
+    walkInName: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: null,
+      immutable: true,
+      validate: {
+        validator(value) {
+          if (this.source !== APPOINTMENT_SOURCE.WALK_IN) return true;
+          // یکی از «حساب مشتری» یا «نام مشتری حضوری» لازم است، نه هر دو
+          return Boolean(value) !== Boolean(this.customerId);
+        },
+        message: 'walk-in requires exactly one of customerId or walkInName',
+      },
+    },
     walkInMobile: { type: String, trim: true, match: /^09\d{9}$/, default: null, immutable: true },
     source: { type: String, enum: APPOINTMENT_SOURCES, required: true, immutable: true },
-    status: { type: String, enum: APPOINTMENT_STATUSES, required: true },
+    status: {
+      type: String,
+      enum: APPOINTMENT_STATUSES,
+      required: true,
+      validate: {
+        validator(value) {
+          // مشتری حضوری مستقیم «حاضر شد» ثبت می‌شود، پس هرگز موقت نیست
+          return !(this.source === APPOINTMENT_SOURCE.WALK_IN && value === APPOINTMENT_STATUS.HELD);
+        },
+        message: 'walk-in cannot be held',
+      },
+    },
 
     dayKey: { type: String, required: true, match: DAY_KEY_PATTERN, immutable: true },
     bookedStart: { type: Date, required: true, immutable: true },
-    bookedEnd: { type: Date, required: true, immutable: true },
+    bookedEnd: {
+      type: Date,
+      required: true,
+      immutable: true,
+      validate: {
+        validator(value) {
+          return !this.bookedStart || !value || new Date(value) > new Date(this.bookedStart);
+        },
+        message: 'bookedEnd must be after bookedStart',
+      },
+    },
     estimatedStart: { type: Date, required: true },
-    estimatedEnd: { type: Date, required: true },
+    estimatedEnd: {
+      type: Date,
+      required: true,
+      validate: {
+        validator(value) {
+          return !this.estimatedStart || !value || new Date(value) > new Date(this.estimatedStart);
+        },
+        message: 'estimatedEnd must be after estimatedStart',
+      },
+    },
 
     priceSnapshot: money({ required: true, immutable: true }),
     durationSnapshot: { type: Number, required: true, min: 5, validate: isInt, immutable: true },
-    depositAmount: money({ default: 0, immutable: true }),
+    depositAmount: money({
+      default: 0,
+      immutable: true,
+      validate: {
+        validator(value) {
+          return value == null || this.priceSnapshot == null || value <= this.priceSnapshot;
+        },
+        message: 'deposit cannot exceed price',
+      },
+    }),
 
-    heldUntil: { type: Date, default: null },
+    heldUntil: {
+      type: Date,
+      default: null,
+      validate: {
+        validator(value) {
+          return this.status !== APPOINTMENT_STATUS.HELD || Boolean(value);
+        },
+        message: 'heldUntil is required for held appointments',
+      },
+    },
     arrivedAt: { type: Date, default: null },
     startedAt: { type: Date, default: null },
     finishedAt: { type: Date, default: null },
@@ -66,24 +138,6 @@ const appointmentSchema = new Schema(
   },
   { collection: 'appointments', timestamps: true, versionKey: false },
 );
-
-appointmentSchema.pre('validate', function crossFieldChecks() {
-  if (this.bookedEnd <= this.bookedStart) this.invalidate('bookedEnd', 'bookedEnd must be after bookedStart');
-  if (this.estimatedEnd <= this.estimatedStart) this.invalidate('estimatedEnd', 'estimatedEnd must be after estimatedStart');
-
-  if (this.source === APPOINTMENT_SOURCE.ONLINE && !this.customerId) {
-    this.invalidate('customerId', 'online appointment requires customerId');
-  }
-  if (this.source === APPOINTMENT_SOURCE.WALK_IN) {
-    if (!this.customerId && !this.walkInName) this.invalidate('walkInName', 'walk-in requires customerId or walkInName');
-    if (this.customerId && this.walkInName) this.invalidate('walkInName', 'walkInName and customerId are mutually exclusive');
-    if (this.status === APPOINTMENT_STATUS.HELD) this.invalidate('status', 'walk-in cannot be held');
-  }
-  if (this.status === APPOINTMENT_STATUS.HELD && !this.heldUntil) {
-    this.invalidate('heldUntil', 'heldUntil is required for held appointments');
-  }
-  if (this.depositAmount > this.priceSnapshot) this.invalidate('depositAmount', 'deposit cannot exceed price');
-});
 
 // بازه‌های هم‌پوشان یک آرایشگر (بررسی اصلی هم‌پوشانی در سرویس رزرو داخل قفل ردیس انجام می‌شود، گام ۷)
 appointmentSchema.index({ barberId: 1, bookedStart: 1, bookedEnd: 1 });

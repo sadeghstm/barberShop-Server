@@ -1,44 +1,5 @@
 'use strict';
 
-const mongoose = require('mongoose');
-const { GRID_MINUTES } = require('../../constants/time');
-
-const { Schema } = mongoose;
-
-const isInt = { validator: Number.isInteger, message: '{PATH} must be an integer' };
-
-/**
- * فعال‌سازی یک خدمت توسط آرایشگر، با قیمت و مدت خودش (۵.۵). تا قبل از تعیین هر دو، رزرو‌پذیر نیست:
- * isActive فقط وقتی true می‌شود که price و durationMinutes مقدار داشته باشند.
- * قیمت: عدد صحیح به تومان. مدت: مضرب ۵ دقیقه (هم‌خوان با شبکه ۵ دقیقه‌ای رزرو).
- * shopId برای محدودسازی دسترسی به آرایشگاه (بخش ۴) تکرار شده است.
- */
-const barberServiceSchema = new Schema(
-  {
-    barberId: { type: Schema.Types.ObjectId, ref: 'Barber', required: true, immutable: true },
-    shopId: { type: Schema.Types.ObjectId, ref: 'Shop', required: true, immutable: true },
-    serviceId: { type: Schema.Types.ObjectId, ref: 'ServiceCatalog', required: true, immutable: true },
-    price: { type: Number, default: null, min: 0, validate: isInt },
-    durationMinutes: {
-      type: Number,
-      default: null,
-      min: GRID_MINUTES,
-      max: 480,
-      validate: [isInt, { validator: (v) => v == null || v % GRID_MINUTES === 0, message: 'durationMinutes must be a multiple of 5' }],
-    },
-    isActive: { type: Boolean, default: false },
-  },
-  { collection: 'barberServices', timestamps: true, versionKey: false },
-);
-
-barberServiceSchema.pre('validate', function requirePriceWhenActive() {
-  if (this.isActive && (this.price == null || this.durationMinutes == null)) {
-    this.invalidate('isActive', 'price and durationMinutes must be set before activating a service');
-  }
-});
-
-barberServiceSchema.index({ barberId: 1, serviceId: 1 }, { unique: true });
-barberServiceSchema.index({ shopId: 1, serviceId: 1, isActive: 1 });
-barberServiceSchema.index({ serviceId: 1, isActive: 1 });
-
-module.exports = mongoose.models.BarberService || mongoose.model('BarberService', barberServiceSchema);
+// این فایل قبلاً نسخه دوم مدل بود و با src/models/BarberService.js هم‌پوشانی داشت.
+// حالا فقط همان مدل واحد را دوباره صادر می‌کند تا تعریف مدل در دو جا تکرار نشود.
+module.exports = require('../../models/BarberService');

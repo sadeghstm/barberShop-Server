@@ -13,7 +13,19 @@ const { Schema } = mongoose;
 const walletTransactionSchema = new Schema(
   {
     account: { type: String, enum: WALLET_ACCOUNTS, default: WALLET_ACCOUNT.USER, immutable: true },
-    userId: { type: Schema.Types.ObjectId, ref: 'User', default: null, immutable: true },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      immutable: true,
+      // حساب کاربری باید userId داشته باشد؛ حساب پلتفرم نباید (۵.۷)
+      validate: {
+        validator(value) {
+          return this.account === WALLET_ACCOUNT.PLATFORM ? !value : Boolean(value);
+        },
+        message: 'userId is required for user account and forbidden for platform account',
+      },
+    },
     type: { type: String, enum: WALLET_TX_TYPES, required: true, immutable: true },
     amount: {
       type: Number,
@@ -32,11 +44,6 @@ const walletTransactionSchema = new Schema(
   },
   { collection: 'walletTransactions', versionKey: false },
 );
-
-walletTransactionSchema.pre('validate', function accountRules() {
-  if (this.account === WALLET_ACCOUNT.USER && !this.userId) this.invalidate('userId', 'userId is required for user account');
-  if (this.account === WALLET_ACCOUNT.PLATFORM && this.userId) this.invalidate('userId', 'platform account has no userId');
-});
 
 walletTransactionSchema.index({ idempotencyKey: 1 }, { unique: true });
 walletTransactionSchema.index({ userId: 1, createdAt: -1 });

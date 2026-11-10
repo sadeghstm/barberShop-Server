@@ -14,7 +14,18 @@ const paymentSchema = new Schema(
   {
     appointmentId: { type: Schema.Types.ObjectId, ref: 'Appointment', required: true, immutable: true },
     customerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, immutable: true },
-    amount: { type: Number, required: true, min: 0, validate: isInt, immutable: true },
+    amount: {
+      type: Number,
+      required: true,
+      min: 0,
+      immutable: true,
+      validate: {
+        validator(value) {
+          return Number.isInteger(value) && this.walletAmount + this.gatewayAmount === value;
+        },
+        message: 'walletAmount + gatewayAmount must equal amount',
+      },
+    },
     walletAmount: { type: Number, default: 0, min: 0, validate: isInt, immutable: true },
     gatewayAmount: { type: Number, default: 0, min: 0, validate: isInt, immutable: true },
     provider: { type: String, enum: PAYMENT_PROVIDERS, default: PAYMENT_PROVIDER.MOCK },
@@ -26,12 +37,6 @@ const paymentSchema = new Schema(
   },
   { collection: 'payments', timestamps: true, versionKey: false },
 );
-
-paymentSchema.pre('validate', function amountsAddUp() {
-  if (this.walletAmount + this.gatewayAmount !== this.amount) {
-    this.invalidate('amount', 'walletAmount + gatewayAmount must equal amount');
-  }
-});
 
 paymentSchema.index({ idempotencyKey: 1 }, { unique: true });
 paymentSchema.index({ appointmentId: 1 });
