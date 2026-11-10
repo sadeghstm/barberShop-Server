@@ -179,7 +179,7 @@ erDiagram
 | کلید | کاربرد | TTL |
 |---|---|---|
 | `lock:booking:{barberId}:{dayKey}` | قفل کوتاه رزرو | ۱۰ ثانیه |
-| `sms:queue` | صف پیامک (list) | — |
+| `sms:queue` | صف پیامک (list)؛ شکست ارسال ⇒ حداکثر ۳ تلاش | — |
 | `sms:sent:{idempotencyKey}` | جلوگیری از پیامک تکراری | ۷ روز |
 | `otp:code:{mobile}` / `otp:tries` / `otp:cooldown` | احراز هویت | ۱۲۰ / ۱۲۰ / ۶۰ ثانیه |
 | `session:{token}` | نشست کوکی | `SESSION_TTL_DAYS` |

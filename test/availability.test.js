@@ -6,6 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { computeFreeSlots, findFirstWalkInSlot, isBlocking } = require('../src/services/availability');
+const { ONLINE_BLOCKING_STATUSES, BLOCKING_STATUSES } = require('../src/constants/enums');
 const { dayKeyTimeToDate, addMinutes, weekdayOfDayKey } = require('../src/helpers/time');
 
 const DAY_KEY = '2026-11-10'; // سه‌شنبه → weekday 3
@@ -87,6 +88,36 @@ test('held منقضی‌شده مسدودکننده نیست ولی held فعا�
 test('status های cancelled/expired اشغال نمی‌کنند', () => {
   for (const status of ['cancelled', 'expired']) {
     assert.equal(isBlocking({ status, bookedStart: at('09:00'), bookedEnd: at('10:00') }, new Date()), false);
+  }
+});
+
+test('نوبت سوخته (noShow) برای رزرو آنلاین بسته است ولی برای مشتری حضوری باز', () => {
+  const now = at('09:00');
+  const burned = { status: 'noShow', bookedStart: at('09:30'), bookedEnd: at('10:00') };
+  assert.equal(isBlocking(burned, now), true); // پیش‌فرض = آنلاین
+  assert.equal(isBlocking(burned, now, BLOCKING_STATUSES), false);
+
+  const onlineSlots = times(
+    computeFreeSlots({ shop: makeShop(), dayKey: DAY_KEY, durationMinutes: 30, appointments: [burned], now, minLeadMinutes: 0 }),
+  );
+  assert.ok(!onlineSlots.includes(at('09:30').toISOString()));
+  assert.ok(onlineSlots.includes(at('10:00').toISOString()));
+
+  const walkInSlot = findFirstWalkInSlot({
+    shop: makeShop(),
+    dayKey: DAY_KEY,
+    durationMinutes: 30,
+    appointments: [burned],
+    now,
+  });
+  assert.equal(walkInSlot.toISOString(), at('09:00').toISOString());
+});
+
+test('انواع وضعیت‌های مسدودکننده: آنلاین شامل noShow و حضوری بدون آن', () => {
+  assert.ok(ONLINE_BLOCKING_STATUSES.includes('noShow'));
+  assert.ok(!BLOCKING_STATUSES.includes('noShow'));
+  for (const status of ['held', 'confirmed', 'arrived', 'inProgress']) {
+    assert.ok(BLOCKING_STATUSES.includes(status));
   }
 });
 

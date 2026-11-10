@@ -11,7 +11,7 @@
 // خروجی: آرایه‌ای از Date (شروع‌های آزاد روی شبکه ۵ دقیقه‌ای)
 
 const { GRID_MINUTES } = require('../constants/time');
-const { BLOCKING_STATUSES } = require('../constants/enums');
+const { BLOCKING_STATUSES, ONLINE_BLOCKING_STATUSES } = require('../constants/enums');
 const {
   weekdayOfDayKey,
   dayKeyTimeToDate,
@@ -22,11 +22,13 @@ const {
 
 /**
  * آیا یک نوبت در محاسبه اشغال محسوب می‌شود؟
- * - وضعیت‌های BLOCKING_STATUSES اشغال‌اند.
- * - held منقضی‌شده (heldUntil گذشته) اشغال نیست.
+ * - پیش‌فرض برای رزرو آنلاین: ONLINE_BLOCKING_STATUSES (شامل noShow) — بازه نوبت سوخته
+ *   برای آنلاین بسته می‌ماند و فقط مشتری حضوری می‌تواند آن را بگیرد (۵.۳).
+ * - برای مشتری حضوری: BLOCKING_STATUSES (بدون noShow).
+ * - held منقضی‌شده (heldUntil گذشته) در هر دو حالت اشغال نیست.
  */
-function isBlocking(appointment, now) {
-  if (!BLOCKING_STATUSES.includes(appointment.status)) return false;
+function isBlocking(appointment, now, statuses = ONLINE_BLOCKING_STATUSES) {
+  if (!statuses.includes(appointment.status)) return false;
   if (appointment.status === 'held' && appointment.heldUntil && new Date(appointment.heldUntil) <= now) {
     return false;
   }
@@ -57,13 +59,21 @@ function workingIntervalsForDay(shop, dayKey) {
  * - نوبت آنلاین باید حداقل minLeadMinutes بعد از الان شروع شود.
  * - با هیچ نوبت مسدودکننده‌ای هم‌پوشانی ندارد.
  */
-function computeFreeSlots({ shop, dayKey, durationMinutes, appointments = [], now = new Date(), minLeadMinutes = 15 }) {
+function computeFreeSlots({
+  shop,
+  dayKey,
+  durationMinutes,
+  appointments = [],
+  now = new Date(),
+  minLeadMinutes = 15,
+  blockingStatuses = ONLINE_BLOCKING_STATUSES,
+}) {
   if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) return [];
   const intervals = workingIntervalsForDay(shop, dayKey);
   if (intervals.length === 0) return [];
 
   const blocking = appointments
-    .filter((a) => isBlocking(a, now))
+    .filter((a) => isBlocking(a, now, blockingStatuses))
     .map((a) => ({ start: new Date(a.bookedStart), end: new Date(a.bookedEnd) }));
 
   const earliestStart = addMinutes(now, minLeadMinutes);
@@ -94,7 +104,15 @@ function computeFreeSlots({ shop, dayKey, durationMinutes, appointments = [], no
  * appointments باید شامل نوبت‌های همان روز باشد؛ اگر روز عوض شد، فراخواننده روز بعد را هم بررسی می‌کند.
  */
 function findFirstWalkInSlot({ shop, dayKey, durationMinutes, appointments = [], now = new Date() }) {
-  const slots = computeFreeSlots({ shop, dayKey, durationMinutes, appointments, now, minLeadMinutes: 0 });
+  const slots = computeFreeSlots({
+    shop,
+    dayKey,
+    durationMinutes,
+    appointments,
+    now,
+    minLeadMinutes: 0,
+    blockingStatuses: BLOCKING_STATUSES, // جای نوبت سوخته برای مشتری حضوری آزاد است
+  });
   return slots.length > 0 ? slots[0] : null;
 }
 

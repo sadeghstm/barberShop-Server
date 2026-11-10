@@ -14,13 +14,14 @@
 ## ۱) اجرا
 
 ```bash
+docker compose up -d      # مونگو و ردیس محلی (اختیاری؛ یا از سرورهای خودتان استفاده کنید)
 cp .env.example .env      # مقادیر MONGO_URI و REDIS_URL را تنظیم کنید
 npm install
 npm run seed              # کاتالوگ پیش‌فرض خدمات + لیبل‌های نظرسنجی (idempotent)
 npm run seed:demo         # داده نمایشی: آرایشگاه نمونه + دو آرایشگر + خدمات فعال
 npm run create-superadmin -- 09121234567   # ساخت اولین سوپر ادمین
 npm run dev               # اجرا با watch  (production: npm start)
-npm test                  # ۱۶۱ تست، بدون نیاز به مونگو/ردیس
+npm test                  # ۱۶۳ تست، بدون نیاز به مونگو/ردیس
 ```
 
 پیش‌نیاز: Node.js ≥ 20.12، MongoDB ≥ 6 (برای `$in` در ایندکس جزئی)، Redis.
@@ -46,6 +47,7 @@ src/
   routes/                  مسیرها (index.js همه را سوار می‌کند)
 test/                      تست‌ها با node:test (بدون دیتابیس؛ مدل‌های ساختگی)
 scripts/                   createSuperAdmin.js، seed.js، seedDemo.js
+docker-compose.yml         مونگو و ردیس محلی برای توسعه
 docs/API.md                مستند کامل API
 docs/ARCHITECTURE.md       دیاگرام اجزا، جریان رزرو، ماشین وضعیت، مدل داده
 docs/BACKLOG.md            موارد خارج از محدوده این نسخه (طبق سند طراحی)
@@ -161,7 +163,7 @@ POST /api/appointments/{id}/pay  { "useWallet": true, "idempotencyKey": "pay:...
 npm test
 ```
 
-۱۶۱ تست با `node:test`: زمان تهران، محاسبه اسلات‌ها، قفل ردیس، صف پیامک، شکل پاسخ‌ها، تنظیمات و ماشین
+۱۶۳ تست با `node:test`: زمان تهران، محاسبه اسلات‌ها، قفل ردیس، صف پیامک، شکل پاسخ‌ها، تنظیمات و ماشین
 وضعیت، مدل‌ها، معرفی/پورسانت، و **جریان کامل رزرو→پرداخت→تکمیل→لغو/برگشت** با مدل‌های در حافظه
 (بدون مونگو/ردیس)، شامل تست هم‌زمانی دو رزرو روی یک بازه.
 

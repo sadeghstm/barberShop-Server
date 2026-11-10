@@ -7,6 +7,9 @@ const appointmentsController = require('../controllers/appointments');
 const { authenticate, optionalAuth, requireRole, requireShopAccess } = require('../middlewares/auth');
 const { ROLES } = require('../constants/roles');
 
+// مالک آرایشگاه + ادمین‌های پلتفرم (محدودسازی آرایشگاهی با requireShopAccess انجام می‌شود)
+const OWNER_OR_ADMIN = requireRole(ROLES.SHOP_OWNER, ROLES.ADMIN, ROLES.SUPER_ADMIN);
+
 // عمومی (قیمت‌ها بر اساس ورود کاربر در کنترلر تنظیم می‌شود)
 router.get('/', optionalAuth, shopsController.list);
 router.get('/slug/:slug', optionalAuth, shopsController.getBySlug);
@@ -18,22 +21,22 @@ router.get('/:shopId/survey-stats', authenticate, requireShopAccess(), shopsCont
 // پنل مالک/آرایشگر
 // هر کاربر واردشده می‌تواند آرایشگاه بسازد و مالک آن شود (نقش shopOwner از سند Barber می‌آید)
 router.post('/', authenticate, shopsController.create);
-router.patch('/:shopId', authenticate, requireShopAccess(), shopsController.update);
-router.put('/:shopId/working-hours', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.setWorkingHours);
-router.post('/:shopId/holidays', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.addHoliday);
-router.delete('/:shopId/holidays/:date', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.removeHoliday);
+router.patch('/:shopId', authenticate, requireShopAccess(), OWNER_OR_ADMIN, shopsController.update);
+router.put('/:shopId/working-hours', authenticate, requireShopAccess(), OWNER_OR_ADMIN, shopsController.setWorkingHours);
+router.post('/:shopId/holidays', authenticate, requireShopAccess(), OWNER_OR_ADMIN, shopsController.addHoliday);
+router.delete('/:shopId/holidays/:date', authenticate, requireShopAccess(), OWNER_OR_ADMIN, shopsController.removeHoliday);
 
 // نوبت‌های آرایشگاه (پنل مالک/آرایشگر)
 router.get('/:shopId/appointments', authenticate, requireShopAccess(), shopsController.listAppointments);
 
 // کارکنان
 router.get('/:shopId/staff', authenticate, requireShopAccess(), shopsController.listStaff);
-router.post('/:shopId/barbers', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.addBarber);
+router.post('/:shopId/barbers', authenticate, requireShopAccess(), OWNER_OR_ADMIN, shopsController.addBarber);
 router.delete(
   '/:shopId/barbers/:barberId',
   authenticate,
   requireShopAccess(),
-  requireRole(ROLES.SHOP_OWNER),
+  OWNER_OR_ADMIN,
   shopsController.removeBarber,
 );
 

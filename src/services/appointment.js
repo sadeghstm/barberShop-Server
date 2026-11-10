@@ -15,6 +15,7 @@ const {
   APPOINTMENT_STATUS,
   APPOINTMENT_SOURCE,
   ONLINE_BLOCKING_STATUSES,
+  BLOCKING_STATUSES,
   PAYMENT_STATUS,
   CATALOG_STATUS,
   REFUND_STATUS,
@@ -67,12 +68,12 @@ async function getActiveBarberServiceOrFail(barberId, serviceId) {
 }
 
 /** نوبت‌های مسدودکننده یک آرایشگر در یک روز (held منقضی کنار گذاشته می‌شود). */
-async function blockingAppointmentsForDay(barberId, dayKey, now) {
+async function blockingAppointmentsForDay(barberId, dayKey, now, statuses = ONLINE_BLOCKING_STATUSES) {
   // dayKey به وقت تهران ذخیره می‌شود، پس نیازی به بازه زمانی روی bookedStart نیست
   const all = await Appointment.find({
     barberId,
     dayKey,
-    status: { $in: ONLINE_BLOCKING_STATUSES },
+    status: { $in: statuses },
   }).lean();
   return all.filter((a) => {
     if (a.status === 'held' && a.heldUntil && new Date(a.heldUntil) <= now) return false;
@@ -672,13 +673,14 @@ async function createWalkIn({ shopId, barberId, serviceId, actor, walkInName, wa
   for (let offset = 0; offset < 7; offset += 1) {
     const day = addMinutes(now, offset * 24 * 60);
     const dayKey = toDayKey(day);
-    const appointments = await blockingAppointmentsForDay(barberId, dayKey, now);
+    // برای مشتری حضوری، نوبت سوخته (noShow) مسدودکننده نیست
+    const appointments = await blockingAppointmentsForDay(barberId, dayKey, now, BLOCKING_STATUSES);
     const slot = findFirstWalkInSlot({ shop, dayKey, durationMinutes: bs.durationMinutes, appointments, now });
     if (!slot) continue;
     const end = addMinutes(slot, bs.durationMinutes);
     // داخل قفل دوباره بررسی می‌کنیم (رقابت با رزرو آنلاین)
     return withBookingLock(barberId, dayKey, async () => {
-      const fresh = await blockingAppointmentsForDay(barberId, dayKey, new Date());
+      const fresh = await blockingAppointmentsForDay(barberId, dayKey, new Date(), BLOCKING_STATUSES);
       if (checkOverlap(slot, end, fresh)) {
         throw AppError.conflict('این بازه آزاد نیست؛ دوباره تلاش کنید');
       }
