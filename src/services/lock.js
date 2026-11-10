@@ -21,7 +21,7 @@ const lockKey = (barberId, dayKey) => `lock:booking:${barberId}:${dayKey}`;
  * قفل را می‌گیرد و یک تابع release برمی‌گرداند.
  * اگر قفل گرفته نشد AppError با 409 پرتاب می‌شود (فرانت می‌تواند دوباره تلاش کند).
  */
-async function acquireBookingLock(barberId, dayKey, { ttlMs = 5000 } = {}) {
+async function acquireBookingLock(barberId, dayKey, { ttlMs = 10_000 } = {}) {
   const key = lockKey(barberId, dayKey);
   const token = crypto.randomBytes(16).toString('hex');
   const acquired = await redis.set(key, token, 'PX', ttlMs, 'NX');
