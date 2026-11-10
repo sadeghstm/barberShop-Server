@@ -67,6 +67,18 @@ exports.logout = async (req, res) => {
 
 /** GET /api/auth/me — اطلاعات کاربر واردشده (برای فرانت‌اند) */
 exports.me = (req, res) => {
-  const { userId, mobile, name, role, roles, shopId } = req.auth;
-  res.json({ user: { id: userId, mobile, name, role, roles, shopId } });
+  const { userId, mobile, name, role, roles, shopId, barberId } = req.auth;
+  res.json({ user: { id: userId, mobile, name, role, roles, shopId, barberId } });
+};
+
+/** PATCH /api/auth/profile { name } — ویرایش نام نمایشی */
+exports.updateProfile = async (req, res) => {
+  const user = await userService.updateProfile({ userId: req.auth.userId, name: req.body?.name });
+  await req.audit({
+    action: 'user.updateProfile',
+    entityType: 'users',
+    entityId: user._id,
+    after: { name: user.name },
+  });
+  res.json({ user: { id: user._id, mobile: user.mobile, name: user.name } });
 };

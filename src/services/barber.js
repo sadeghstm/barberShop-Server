@@ -6,7 +6,7 @@
 const Barber = require('../models/Barber');
 const User = require('../models/User');
 const Shop = require('../models/Shop');
-const { ROLES, ROLE_PRIORITY } = require('../constants/roles');
+const { ROLES } = require('../constants/roles');
 const { AppError } = require('../helpers/AppError');
 const { normalizeMobile } = require('../helpers/mobile');
 const auditService = require('./audit');
@@ -119,4 +119,4 @@ async function getMyBarberProfile(actor) {
   return barber;
 }
 
-module.exports = { addBarber, removeBarber, listShopBarbers, getMyBarberProfile, assertShopAccess, ROLE_PRIORITY };
+module.exports = { addBarber, removeBarber, listShopBarbers, getMyBarberProfile, assertShopAccess };

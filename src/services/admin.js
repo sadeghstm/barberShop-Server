@@ -161,6 +161,137 @@ async function getDashboardStats() {
   };
 }
 
+/** ساخت ادمین با شماره موبایل (سوپر ادمین). کاربر اگر نباشد ساخته می‌شود. */
+async function createAdmin({ actor, mobile }) {
+  const { normalizeMobile } = require('../helpers/mobile');
+  const normalized = normalizeMobile(mobile);
+  if (!normalized) throw AppError.validation('شماره موبایل معتبر نیست');
+
+  let user = await User.findOne({ mobile: normalized });
+  const before = user ? user.toObject() : null;
+  if (!user) {
+    user = await User.create({ mobile: normalized, roles: [ROLES.ADMIN, ROLES.CUSTOMER] });
+  } else if (!user.roles.includes(ROLES.ADMIN)) {
+    user.roles = [...new Set([...user.roles, ROLES.ADMIN])];
+    await user.save();
+  }
+
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: 'user.createAdmin',
+    entityType: 'users',
+    entityId: user._id,
+    before,
+    after: user,
+  });
+  return user;
+}
+
+/** فعال/غیرفعال کردن کاربر (ادمین). کاربر غیرفعال نمی‌تواند وارد شود. */
+async function setUserActive({ actor, userId, isActive }) {
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('کاربر یافت نشد');
+  if (Boolean(user.isActive) === Boolean(isActive)) return user; // بدون تغییر
+  const before = user.toObject();
+  user.isActive = Boolean(isActive);
+  await user.save();
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: isActive ? 'user.activate' : 'user.deactivate',
+    entityType: 'users',
+    entityId: user._id,
+    before,
+    after: user,
+  });
+  return user;
+}
+
+/**
+ * آمار ساده روزانه (فاز ۳): به ازای هر dayKey تهران تعداد نوبت‌ها به تفکیک وضعیت،
+ * مبلغ نهایی خدمات تکمیل‌شده و بیعانه‌های موفق.
+ */
+async function getDailyStats({ from, to }) {
+  const match = {};
+  if (from || to) {
+    match.dayKey = {};
+    if (from) match.dayKey.$gte = from;
+    if (to) match.dayKey.$lte = to;
+  }
+
+  const rows = await Appointment.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: { dayKey: '$dayKey', status: '$status' },
+        count: { $sum: 1 },
+        finalTotal: { $sum: { $ifNull: ['$finalPrice', 0] } },
+        depositTotal: { $sum: { $ifNull: ['$depositAmount', 0] } },
+      },
+    },
+    { $sort: { '_id.dayKey': 1 } },
+  ]);
+
+  const byDay = new Map();
+  for (const row of rows) {
+    const dayKey = row._id.dayKey;
+    if (!byDay.has(dayKey)) {
+      byDay.set(dayKey, {
+        dayKey,
+        total: 0,
+        statuses: {},
+        completedRevenue: 0,
+        deposits: 0,
+      });
+    }
+    const day = byDay.get(dayKey);
+    day.total += row.count;
+    day.statuses[row._id.status] = row.count;
+    if (row._id.status === APPOINTMENT_STATUS.COMPLETED) day.completedRevenue += row.finalTotal;
+    if (row._id.status === APPOINTMENT_STATUS.COMPLETED || row._id.status === APPOINTMENT_STATUS.CONFIRMED) {
+      day.deposits += row.depositTotal;
+    }
+  }
+
+  return [...byDay.values()];
+}
+
+/** نوبت‌های کل پلتفرم با فیلتر (پنل ادمین). */
+async function listAppointments({ from, to, status, shopId, barberId, customerId, page = 1, limit = 50 }) {
+  const query = {};
+  if (status) query.status = status;
+  if (shopId) query.shopId = shopId;
+  if (barberId) query.barberId = barberId;
+  if (customerId) query.customerId = customerId;
+  if (from || to) {
+    query.dayKey = {};
+    if (from) query.dayKey.$gte = from;
+    if (to) query.dayKey.$lte = to;
+  }
+  const [rows, total] = await Promise.all([
+    Appointment.find(query)
+      .sort({ bookedStart: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Appointment.countDocuments(query),
+  ]);
+  return { rows, total, page, limit };
+}
+
+/** درخواست‌های لغو در انتظار تصمیم مشتری (برای پیگیری ادمین). */
+async function listPendingCancelRequests({ page = 1, limit = 50 }) {
+  const query = { 'cancelRequest.status': 'pending' };
+  const [rows, total] = await Promise.all([
+    Appointment.find(query)
+      .sort({ 'cancelRequest.requestedAt': 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Appointment.countDocuments(query),
+  ]);
+  return { rows, total, page, limit };
+}
+
 /** دفتر کل کیف پول یک کاربر (برای پشتیبانی). */
 async function getUserWalletLedger(userId) {
   const user = await User.findById(userId).lean();
@@ -172,6 +303,11 @@ async function getUserWalletLedger(userId) {
 
 module.exports = {
   listPayments,
+  setUserActive,
+  createAdmin,
+  getDailyStats,
+  listAppointments,
+  listPendingCancelRequests,
   listRefunds,
   refundPayment,
   getSettings,

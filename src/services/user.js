@@ -18,4 +18,19 @@ async function findOrCreateByMobile(mobile) {
   }
 }
 
-module.exports = { findOrCreateByMobile };
+/** به‌روزرسانی نام نمایشی کاربر (فقط نام؛ موبایل قابل تغییر نیست). */
+async function updateProfile({ userId, name }) {
+  const User = require('../models/User');
+  const { AppError } = require('../helpers/AppError');
+  const user = await User.findById(userId);
+  if (!user) throw AppError.notFound('کاربر یافت نشد');
+  if (name !== undefined) {
+    const trimmed = String(name ?? '').trim();
+    if (trimmed.length > 80) throw AppError.validation('نام حداکثر ۸۰ کاراکتر است');
+    user.name = trimmed;
+  }
+  await user.save();
+  return user;
+}
+
+module.exports = { findOrCreateByMobile, updateProfile };

@@ -6,7 +6,8 @@ const { WALLET_ACCOUNT, WALLET_TX_TYPE } = require('../constants/enums');
 const { AppError } = require('../helpers/AppError');
 
 // کیف پول (بخش ۵.۶ و ۵.۷): فقط از پورسانت و بازگشت بیعانه شارژ می‌شود، قابل خرج برای بیعانه است.
-// هر تراکنش idempotencyKey یکتا دارد تا درخواست تکراری دوبار اثر نکند.
+// برداشت ندارد. هر تراکنش idempotencyKey یکتا دارد تا درخواست تکراری دوبار اثر نکند.
+// به‌روزرسانی موجودی اتمیک است ($inc) تا دو تراکنش هم‌زمان همدیگر را گم نکنند.
 
 /** کیف پول کاربر را برمی‌گرداند؛ اگر نبود با موجودی صفر ساخته می‌شود. */
 async function getOrCreateWallet(userId) {
@@ -28,7 +29,7 @@ async function getBalance(userId) {
 }
 
 /**
- * یک تراکنش روی کیف پول کاربر ثبت می‌کند و موجودی را به‌روز می‌کند.
+ * یک تراکنش روی کیف پول کاربر ثبت می‌کند و موجودی را اتمیک به‌روز می‌کند.
  * amount علامت‌دار است (مثبت = افزایش). اگر idempotencyKey قبلاً ثبت شده باشد، همان تراکنش برگردانده می‌شود.
  */
 async function applyTransaction({ userId, type, amount, idempotencyKey, refType = null, refId = null }) {
@@ -38,11 +39,12 @@ async function applyTransaction({ userId, type, amount, idempotencyKey, refType 
   const existing = await WalletTransaction.findOne({ idempotencyKey });
   if (existing) return { transaction: existing, duplicated: true };
 
-  const wallet = await getOrCreateWallet(userId);
-  const nextBalance = wallet.balance + amount;
-  if (nextBalance < 0) {
-    throw AppError.conflict('موجودی کیف پول کافی نیست');
-  }
+  await getOrCreateWallet(userId);
+
+  // کاهش موجودی فقط اگر کافی باشد (شرط روی balance در همان به‌روزرسانی)
+  const filter = amount < 0 ? { userId, balance: { $gte: -amount } } : { userId };
+  const updated = await Wallet.findOneAndUpdate(filter, { $inc: { balance: amount } }, { new: true });
+  if (!updated) throw AppError.conflict('موجودی کیف پول کافی نیست');
 
   try {
     const transaction = await WalletTransaction.create({
@@ -50,15 +52,15 @@ async function applyTransaction({ userId, type, amount, idempotencyKey, refType 
       userId,
       type,
       amount,
-      balanceAfter: nextBalance,
+      balanceAfter: updated.balance,
       refType,
       refId,
       idempotencyKey,
     });
-    wallet.balance = nextBalance;
-    await wallet.save();
     return { transaction, duplicated: false };
   } catch (err) {
+    // ثبت تراکنش شکست خورد: اثر تغییر موجودی برگردانده می‌شود
+    await Wallet.updateOne({ userId }, { $inc: { balance: -amount } });
     if (err.code === 11000) {
       const transaction = await WalletTransaction.findOne({ idempotencyKey });
       return { transaction, duplicated: true };
@@ -67,74 +69,85 @@ async function applyTransaction({ userId, type, amount, idempotencyKey, refType 
   }
 }
 
-/** پورسانت معرفی (۵.۷): از حساب پلتفرم به کیف پول معرف. */
+/**
+ * پورسانت معرفی (۵.۷): از حساب پلتفرم به کیف پول معرف.
+ * کلید یکتا = commission:{appointmentId}
+ */
 async function creditCommission({ referrerId, amount, appointmentId }) {
   if (!referrerId || !amount || amount <= 0) return null;
-  const idempotencyKey = `commission:${appointmentId}`;
-  const existing = await WalletTransaction.findOne({ idempotencyKey });
-  if (existing) return existing;
 
-  const wallet = await getOrCreateWallet(referrerId);
-  const nextBalance = wallet.balance + amount;
-  const transaction = await WalletTransaction.create({
-    account: WALLET_ACCOUNT.USER,
+  const { transaction, duplicated } = await applyTransaction({
     userId: referrerId,
     type: WALLET_TX_TYPE.COMMISSION,
     amount,
-    balanceAfter: nextBalance,
+    idempotencyKey: `commission:${appointmentId}`,
     refType: 'appointments',
     refId: appointmentId,
-    idempotencyKey,
   });
-  wallet.balance = nextBalance;
-  await wallet.save();
+  if (duplicated) return transaction;
 
-  // ثبت کسر از حساب پلتفرم (دفتر کل؛ بدون محدودیت موجودی در نسخه دانشگاهی)
-  await WalletTransaction.create({
-    account: WALLET_ACCOUNT.PLATFORM,
-    type: WALLET_TX_TYPE.COMMISSION,
-    amount: -amount,
-    refType: 'appointments',
-    refId: appointmentId,
-    idempotencyKey: `commission-platform:${appointmentId}`,
-  });
+  // ثبت کسر از حساب پلتفرم در دفتر کل (بدون محدودیت موجودی در نسخه دانشگاهی)
+  try {
+    await WalletTransaction.create({
+      account: WALLET_ACCOUNT.PLATFORM,
+      type: WALLET_TX_TYPE.COMMISSION,
+      amount: -amount,
+      refType: 'appointments',
+      refId: appointmentId,
+      idempotencyKey: `commission-platform:${appointmentId}`,
+    });
+  } catch (err) {
+    if (err.code !== 11000) throw err; // تکراری بودن یعنی قبلاً ثبت شده است
+  }
   return transaction;
 }
 
 /** برگشت پورسانت (۵.۲: برگرداندن «تکمیل شده» فقط ادمین و با خنثی‌شدن پورسانت). */
 async function reverseCommission({ referrerId, amount, appointmentId }) {
   if (!referrerId || !amount || amount <= 0) return null;
-  const idempotencyKey = `commission-reversal:${appointmentId}`;
-  const existing = await WalletTransaction.findOne({ idempotencyKey });
-  if (existing) return existing;
 
-  const wallet = await getOrCreateWallet(referrerId);
-  const nextBalance = Math.max(wallet.balance - amount, 0);
-  const actual = wallet.balance - nextBalance;
-  if (actual > 0) {
-    const transaction = await WalletTransaction.create({
-      account: WALLET_ACCOUNT.USER,
-      userId: referrerId,
-      type: WALLET_TX_TYPE.COMMISSION_REVERSAL,
-      amount: -actual,
-      balanceAfter: nextBalance,
-      refType: 'appointments',
-      refId: appointmentId,
-      idempotencyKey,
-    });
-    wallet.balance = nextBalance;
-    await wallet.save();
+  const { transaction, duplicated } = await applyTransaction({
+    userId: referrerId,
+    type: WALLET_TX_TYPE.COMMISSION_REVERSAL,
+    amount: -amount,
+    idempotencyKey: `commission-reversal:${appointmentId}`,
+    refType: 'appointments',
+    refId: appointmentId,
+  });
+  if (duplicated) return transaction;
+
+  try {
     await WalletTransaction.create({
       account: WALLET_ACCOUNT.PLATFORM,
       type: WALLET_TX_TYPE.COMMISSION_REVERSAL,
-      amount: actual,
+      amount,
       refType: 'appointments',
       refId: appointmentId,
       idempotencyKey: `commission-reversal-platform:${appointmentId}`,
     });
-    return transaction;
+  } catch (err) {
+    if (err.code !== 11000) throw err;
   }
-  return null;
+  return transaction;
+}
+
+/**
+ * برگشت پورسانت یک نوبت (۵.۲): مبلغ و معرف از همان تراکنش اصلی خوانده می‌شود،
+ * نه از درصد فعلی تنظیمات (درصد ممکن است بعداً عوض شده باشد).
+ */
+async function reverseCommissionForAppointment({ appointmentId }) {
+  const commission = await WalletTransaction.findOne({ idempotencyKey: `commission:${appointmentId}` });
+  if (!commission || !commission.userId || commission.amount <= 0) return null;
+  return reverseCommission({
+    referrerId: commission.userId,
+    amount: commission.amount,
+    appointmentId,
+  });
+}
+
+/** مجموع پورسانت پرداخت‌شده بابت یک نوبت (برای نمایش در پنل ادمین). */
+async function getCommissionForAppointment({ appointmentId }) {
+  return WalletTransaction.findOne({ idempotencyKey: `commission:${appointmentId}` }).lean();
 }
 
 module.exports = {
@@ -143,4 +156,6 @@ module.exports = {
   applyTransaction,
   creditCommission,
   reverseCommission,
+  reverseCommissionForAppointment,
+  getCommissionForAppointment,
 };

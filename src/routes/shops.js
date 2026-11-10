@@ -23,6 +23,9 @@ router.put('/:shopId/working-hours', authenticate, requireShopAccess(), requireR
 router.post('/:shopId/holidays', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.addHoliday);
 router.delete('/:shopId/holidays/:date', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.removeHoliday);
 
+// نوبت‌های آرایشگاه (پنل مالک/آرایشگر)
+router.get('/:shopId/appointments', authenticate, requireShopAccess(), shopsController.listAppointments);
+
 // کارکنان
 router.get('/:shopId/staff', authenticate, requireShopAccess(), shopsController.listStaff);
 router.post('/:shopId/barbers', authenticate, requireShopAccess(), requireRole(ROLES.SHOP_OWNER), shopsController.addBarber);

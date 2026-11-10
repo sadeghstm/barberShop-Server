@@ -6,94 +6,10 @@
 
 const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const mongoose = require('mongoose');
 const { createFakeRedis, stubModule, mockLogger } = require('./helpers/fakes');
 const { dayKeyTimeToDate, toDayKey, addMinutes } = require('../src/helpers/time');
 
-const oid = () => new mongoose.Types.ObjectId();
-
-function makeQuery(rows) {
-  const p = Promise.resolve(rows);
-  p.sort = () => p;
-  p.skip = () => p;
-  p.limit = () => p;
-  p.lean = () => Promise.resolve(rows);
-  return p;
-}
-
-function matches(doc, query = {}) {
-  return Object.entries(query).every(([key, expected]) => {
-    const value = doc[key];
-    if (expected && typeof expected === 'object' && !(expected instanceof mongoose.Types.ObjectId) && !(expected instanceof Date) && !Array.isArray(expected)) {
-      if ('$in' in expected) return expected.$in.includes(value);
-      if ('$lte' in expected) return value != null && new Date(value) <= new Date(expected.$lte);
-      if ('$gte' in expected) return value != null && new Date(value) >= new Date(expected.$gte);
-      if ('$gt' in expected) return value != null && new Date(value) > new Date(expected.$gt);
-      if ('$lt' in expected) return value != null && new Date(value) < new Date(expected.$lt);
-      if ('$ne' in expected) return String(value) !== String(expected.$ne);
-      if ('$type' in expected) return value != null;
-    }
-    if (value instanceof mongoose.Types.ObjectId || expected instanceof mongoose.Types.ObjectId) {
-      return String(value) === String(expected);
-    }
-    return value === expected;
-  });
-}
-
-/** مدل ساختگی با API محدودی که سرویس نوبت استفاده می‌کند. */
-function fakeModel({ defaults = {} } = {}) {
-  const rows = [];
-  const hydrate = (data) => {
-    const doc = {
-      ...structuredCloneSafe(defaults),
-      ...data,
-      _id: data._id ?? oid(),
-      async save() {
-        return this;
-      },
-      toObject() {
-        return { ...this };
-      },
-    };
-    return doc;
-  };
-  return {
-    rows,
-    hydrate,
-    async create(data) {
-      const doc = hydrate(data);
-      rows.push(doc);
-      return doc;
-    },
-    find(query) {
-      return makeQuery(rows.filter((doc) => matches(doc, query)));
-    },
-    async findOne(query) {
-      return rows.find((doc) => matches(doc, query)) ?? null;
-    },
-    async findById(id) {
-      return rows.find((doc) => String(doc._id) === String(id)) ?? null;
-    },
-    async countDocuments(query = {}) {
-      return rows.filter((doc) => matches(doc, query)).length;
-    },
-    async updateMany(query, update) {
-      let modifiedCount = 0;
-      for (const doc of rows) {
-        if (matches(doc, query)) {
-          Object.assign(doc, update.$set ?? {});
-          modifiedCount += 1;
-        }
-      }
-      return { modifiedCount };
-    },
-  };
-}
-
-function structuredCloneSafe(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
-
+const { oid, fakeModel } = require('./helpers/fakeModels');
 const redis = createFakeRedis();
 mockLogger();
 
@@ -118,6 +34,7 @@ stubModule('services/audit', { record: async () => ({}) });
 
 const settingsService = require('../src/services/settings');
 const appointmentService = require('../src/services/appointment');
+const catalogService = require('../src/services/catalog');
 
 // ---- چیدمان ثابت: یک آرایشگاه ۲۴ ساعته، یک آرایشگر، یک خدمت ۳۰ دقیقه‌ای ۲۰۰ هزار تومانی ----
 const shopId = oid();
@@ -367,4 +284,99 @@ test('مشتری حضوری در اولین جای خالی ثبت و مستقی
   const booked = models.Appointment.rows.find((a) => a.source === 'online');
   const overlap = walkIn.bookedStart < booked.bookedEnd && booked.bookedStart < walkIn.bookedEnd;
   assert.equal(overlap, false);
+});
+
+test('پرداخت ناموفق: نوبت منقضی می‌شود و بازه دوباره آزاد است', async () => {
+  const held = await appointmentService.createHold({ shopId, barberId, serviceId, customerId, bookedStart: startDate });
+  const result = await appointmentService.confirmWithPayment({
+    appointmentId: held._id,
+    customerId,
+    simulateFailure: true,
+  });
+  assert.equal(result.failed, true);
+  assert.equal(result.payment.status, 'failed');
+  assert.equal(models.Appointment.rows[0].status, 'expired');
+
+  const availability = await appointmentService.getAvailability({ shopId, barberId, serviceId, dayKey });
+  assert.ok(availability.slots.some((slot) => slot.getTime() === startDate.getTime()));
+});
+
+test('دو رزرو هم‌زمان روی یک بازه: فقط یکی موفق می‌شود (قفل ردیس)', async () => {
+  const secondCustomer = oid();
+  models.User.rows.push(models.User.hydrate({ _id: secondCustomer, mobile: '09122222222', referredBy: null }));
+
+  const results = await Promise.allSettled([
+    appointmentService.createHold({ shopId, barberId, serviceId, customerId, bookedStart: startDate }),
+    appointmentService.createHold({ shopId, barberId, serviceId, customerId: secondCustomer, bookedStart: startDate }),
+  ]);
+
+  const fulfilled = results.filter((r) => r.status === 'fulfilled');
+  const rejected = results.filter((r) => r.status === 'rejected');
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.equal(models.Appointment.rows.length, 1);
+  assert.ok(rejected[0].reason.statusCode === 409);
+});
+
+test('برگشت «تکمیل شده» توسط ادمین: پورسانت معرفی خنثی می‌شود', async () => {
+  const referrerId = oid();
+  models.User.rows.push(models.User.hydrate({ _id: referrerId, mobile: '09123333333', referredBy: null }));
+  const customer = models.User.rows.find((u) => String(u._id) === String(customerId));
+  customer.referredBy = referrerId;
+  models.Settings.rows[0].referralCommissionPercent = 20;
+
+  const held = await appointmentService.createHold({ shopId, barberId, serviceId, customerId, bookedStart: startDate });
+  await appointmentService.confirmWithPayment({ appointmentId: held._id, customerId });
+
+  const actor = { userId: barberUserId, role: 'barber', roles: ['barber'], shopId, barberId };
+  await appointmentService.markArrived({ appointmentId: held._id, actor });
+  await appointmentService.markStarted({ appointmentId: held._id, actor });
+  await appointmentService.markCompleted({ appointmentId: held._id, actor, finalPrice: 200000, paidInPerson: 0 });
+
+  const referrerWallet = models.Wallet.rows.find((w) => String(w.userId) === String(referrerId));
+  assert.equal(referrerWallet.balance, 40000); // ۲۰٪ از ۲۰۰٫۰۰۰
+
+  const admin = { userId: oid(), role: 'admin', roles: ['admin'] };
+  const reverted = await appointmentService.revertCompletion({
+    appointmentId: held._id,
+    actor: admin,
+    reason: 'اشتباه در ثبت مبلغ',
+  });
+  assert.equal(reverted.status, 'confirmed');
+  assert.equal(reverted.finalPrice, null);
+  assert.equal(referrerWallet.balance, 0);
+
+  const reversal = models.WalletTransaction.rows.find((t) => t.type === 'commissionReversal');
+  assert.ok(reversal);
+  assert.equal(reversal.amount, -40000);
+});
+
+test('غیرفعال‌کردن خدمت آرایشگر با نوبت آینده مسدود است', async () => {
+  const held = await appointmentService.createHold({ shopId, barberId, serviceId, customerId, bookedStart: startDate });
+  await appointmentService.confirmWithPayment({ appointmentId: held._id, customerId });
+
+  const owner = { userId: barberUserId, role: 'shopOwner', roles: ['shopOwner'], shopId };
+  await assert.rejects(
+    () => catalogService.deactivateBarberService({ actor: owner, shopId, barberId, serviceId }),
+    (err) => err.statusCode === 409,
+  );
+  // خدمت همچنان فعال است
+  const bs = models.BarberService.rows[0];
+  assert.equal(bs.isActive, true);
+});
+
+test('تغییر قیمت/مدت خدمت روی نوبت‌های موجود اثر ندارد (snapshot)', async () => {
+  const held = await appointmentService.createHold({ shopId, barberId, serviceId, customerId, bookedStart: startDate });
+  const owner = { userId: barberUserId, role: 'shopOwner', roles: ['shopOwner'], shopId };
+  await catalogService.upsertBarberService({
+    actor: owner,
+    shopId,
+    barberId,
+    serviceId,
+    price: 500000,
+    durationMinutes: 60,
+    isActive: true,
+  });
+  assert.equal(held.priceSnapshot, 200000);
+  assert.equal(held.durationSnapshot, 30);
 });

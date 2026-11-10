@@ -139,6 +139,17 @@ async function listBarberServices({ barberId, shopId, onlyActive = false }) {
     .sort((a, b) => a.title.localeCompare(b.title, 'fa'));
 }
 
+/** تعداد نوبت‌های آینده یک آرایشگر برای یک خدمت (برای قواعد مسدودسازی ۵.۵). */
+async function countFutureAppointments({ barberId, serviceId }) {
+  const Appointment = require('../models/Appointment');
+  return Appointment.countDocuments({
+    barberId,
+    serviceId,
+    status: { $in: ['held', 'confirmed', 'arrived', 'inProgress'] },
+    bookedEnd: { $gt: new Date() },
+  });
+}
+
 /**
  * فعال‌سازی/به‌روزرسانی خدمت یک آرایشگر با قیمت و مدت خودش.
  * durationMinutes باید مضرب ۵ باشد (شبکه رزرو) و قیمت عدد صحیح تومان.
@@ -150,6 +161,14 @@ async function upsertBarberService({ actor, barberId, shopId, serviceId, price, 
   if (!catalog) throw AppError.notFound('خدمت در کاتالوگ یافت نشد');
   if (catalog.status === CATALOG_STATUS.ARCHIVED) throw AppError.conflict('این خدمت آرشیو شده و قابل فعال‌سازی نیست');
   if (catalog.status === CATALOG_STATUS.REMOVING) throw AppError.conflict('این خدمت در حال حذف است و قابل فعال‌سازی نیست');
+
+  // غیرفعال‌کردن خدمتی که نوبت آینده دارد مسدود است (۵.۵)
+  if (!isActive) {
+    const future = await countFutureAppointments({ barberId, serviceId });
+    if (future > 0) {
+      throw AppError.conflict('این خدمت نوبت آینده دارد؛ ابتدا نوبت‌ها را با موافقت مشتری لغو کنید');
+    }
+  }
 
   if (!Number.isInteger(price) || price < 0) throw AppError.validation('قیمت باید عدد صحیح (تومان) باشد');
   if (!Number.isInteger(durationMinutes) || durationMinutes < 5 || durationMinutes > 480 || durationMinutes % 5 !== 0) {
@@ -179,6 +198,12 @@ async function deactivateBarberService({ actor, barberId, shopId, serviceId }) {
   assertBarberScope(actor, barberId);
   const doc = await BarberService.findOne({ barberId, serviceId });
   if (!doc) throw AppError.notFound('این خدمت برای آرایشگر ثبت نشده است');
+  const future = await countFutureAppointments({ barberId, serviceId });
+  if (future > 0) {
+    throw AppError.conflict('این خدمت نوبت آینده دارد؛ ابتدا نوبت‌ها را با موافقت مشتری لغو کنید', {
+      futureAppointments: future,
+    });
+  }
   const before = doc.toObject();
   doc.isActive = false;
   await doc.save();
@@ -278,8 +303,7 @@ async function listServiceRequests({ status }) {
   const query = {};
   if (status) query.status = status;
   const rows = await ServiceRequest.find(query).sort({ createdAt: 1 }).lean();
-  const ServiceCatalogModel = ServiceCatalog;
-  const services = await ServiceCatalogModel.find({ _id: { $in: rows.map((r) => r.serviceId).filter(Boolean) } }).lean();
+  const services = await ServiceCatalog.find({ _id: { $in: rows.map((r) => r.serviceId).filter(Boolean) } }).lean();
   const map = new Map(services.map((s) => [String(s._id), s]));
   return rows.map((r) => ({
     ...r,

@@ -41,10 +41,15 @@ async function createShop({ actor, data }) {
   return shop;
 }
 
-async function listShops({ city, page = 1, limit = 20 }) {
+async function listShops({ city, q, page = 1, limit = 20 }) {
   const query = { isActive: true };
   if (city) query.city = city;
-  return Shop.find(query).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean();
+  if (q) query.name = { $regex: String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+  const [rows, total] = await Promise.all([
+    Shop.find(query).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+    Shop.countDocuments(query),
+  ]);
+  return { rows, total };
 }
 
 async function getShopBySlug(slug) {
@@ -57,6 +62,14 @@ async function getShopById(shopId) {
   const shop = await Shop.findById(shopId).lean();
   if (!shop) throw AppError.notFound('آرایشگاه یافت نشد');
   return shop;
+}
+
+/** تنظیمات آرایشگاه را به آبجکت ساده تبدیل می‌کند (نested path مونگو یا آبجکت ساده در تست). */
+function settingsSnapshot(shop) {
+  const settings = shop?.settings;
+  if (!settings) return {};
+  if (typeof settings.toObject === 'function') return settings.toObject();
+  return { ...settings };
 }
 
 function assertShopAccess(shopId, actor) {
@@ -72,12 +85,29 @@ async function updateShop({ shopId, actor, data }) {
   if (!shop) throw AppError.notFound('آرایشگاه یافت نشد');
   const before = shop.toObject();
 
+  // غیرفعال‌کردن آرایشگاه با نوبت آینده مسدود است (همان قاعده چرخه حذف، ۵.۵)
+  if (data.isActive === false && shop.isActive) {
+    const future = await countFutureAppointments(shop._id);
+    if (future > 0) {
+      throw AppError.conflict('این آرایشگاه نوبت آینده دارد؛ ابتدا نوبت‌ها را لغو یا جابه‌جا کنید', {
+        futureAppointments: future,
+      });
+    }
+  }
+
   const allowed = ['name', 'city', 'address', 'phone', 'isActive'];
   for (const key of allowed) {
     if (data[key] !== undefined) shop[key] = data[key];
   }
-  if (data.settings !== undefined) shop.settings = data.settings;
-  if (data.showPricesToGuests !== undefined) shop.settings.showPricesToGuests = data.showPricesToGuests;
+  // ادغام تنظیمات تا PATCH جزئی (مثلاً فقط نمایش قیمت) ساعت کاری را پاک نکند
+  if (data.settings !== undefined) {
+    if (typeof data.settings !== 'object' || data.settings === null) {
+      throw AppError.validation('settings باید آبجکت باشد');
+    }
+    const next = { ...settingsSnapshot(shop), ...data.settings };
+    shop.settings = next;
+  }
+  if (data.showPricesToGuests !== undefined) shop.settings.showPricesToGuests = Boolean(data.showPricesToGuests);
 
   await shop.save();
   await auditService.record({
@@ -89,6 +119,129 @@ async function updateShop({ shopId, actor, data }) {
     after: shop,
   });
   return shop;
+}
+
+/** تعداد نوبت‌های آینده یک آرایشگاه (مشترک بین غیرفعال‌سازی و انتقال مالکیت). */
+async function countFutureAppointments(shopId, serviceId) {
+  const Appointment = require('../models/Appointment');
+  const query = {
+    shopId,
+    status: { $in: ['held', 'confirmed', 'arrived', 'inProgress'] },
+    bookedEnd: { $gt: new Date() },
+  };
+  if (serviceId) query.serviceId = serviceId;
+  return Appointment.countDocuments(query);
+}
+
+/** غیرفعال‌سازی آرایشگاه توسط ادمین (بدون حذف سخت). */
+async function deactivateShop({ shopId, actor, reason }) {
+  const shop = await Shop.findById(shopId);
+  if (!shop) throw AppError.notFound('آرایشگاه یافت نشد');
+  if (!shop.isActive) throw AppError.conflict('این آرایشگاه قبلاً غیرفعال شده است');
+  const future = await countFutureAppointments(shop._id);
+  if (future > 0) {
+    throw AppError.conflict('این آرایشگاه نوبت آینده دارد؛ ابتدا نوبت‌ها را لغو یا جابه‌جا کنید', {
+      futureAppointments: future,
+    });
+  }
+  const before = shop.toObject();
+  shop.isActive = false;
+  await shop.save();
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: 'shop.deactivate',
+    entityType: 'shops',
+    entityId: shop._id,
+    before,
+    after: shop,
+    meta: { reason: reason ?? null },
+  });
+  return shop;
+}
+
+async function activateShop({ shopId, actor }) {
+  const shop = await Shop.findById(shopId);
+  if (!shop) throw AppError.notFound('آرایشگاه یافت نشد');
+  if (shop.isActive) throw AppError.conflict('این آرایشگاه فعال است');
+  const before = shop.toObject();
+  shop.isActive = true;
+  await shop.save();
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: 'shop.activate',
+    entityType: 'shops',
+    entityId: shop._id,
+    before,
+    after: shop,
+  });
+  return shop;
+}
+
+/**
+ * انتقال مالکیت آرایشگاه (فقط سوپر ادمین).
+ * مالک قدیم آرایشگر می‌ماند ولی isOwner از او برداشته می‌شود؛ مالک جدید سند Barber فعال می‌گیرد.
+ */
+async function transferOwnership({ shopId, actor, newOwnerUserId }) {
+  const shop = await Shop.findById(shopId);
+  if (!shop) throw AppError.notFound('آرایشگاه یافت نشد');
+  const newOwner = await User.findById(newOwnerUserId);
+  if (!newOwner || !newOwner.isActive) throw AppError.notFound('کاربر مالک جدید یافت نشد');
+  if (String(shop.ownerId) === String(newOwner._id)) throw AppError.conflict('این کاربر مالک فعلی آرایشگاه است');
+
+  const ownsAnother = await Shop.findOne({ ownerId: newOwner._id, isActive: true, _id: { $ne: shop._id } });
+  if (ownsAnother) throw AppError.conflict('این کاربر مالک آرایشگاه دیگری است');
+
+  const elsewhere = await Barber.findOne({ userId: newOwner._id, isActive: true });
+  if (elsewhere && String(elsewhere.shopId) !== String(shop._id)) {
+    throw AppError.conflict('کاربر مالک جدید، آرایشگر فعال آرایشگاه دیگری است');
+  }
+
+  const before = shop.toObject();
+  const oldOwnerBarber = await Barber.findOne({ userId: shop.ownerId, shopId: shop._id, isOwner: true });
+  if (oldOwnerBarber) {
+    oldOwnerBarber.isOwner = false;
+    await oldOwnerBarber.save();
+  }
+
+  let newOwnerBarber = await Barber.findOne({ userId: newOwner._id, shopId: shop._id });
+  if (newOwnerBarber) {
+    newOwnerBarber.isOwner = true;
+    newOwnerBarber.isActive = true;
+    await newOwnerBarber.save();
+  } else {
+    newOwnerBarber = await Barber.create({
+      userId: newOwner._id,
+      shopId: shop._id,
+      isOwner: true,
+      displayName: newOwner.name ?? '',
+    });
+  }
+
+  shop.ownerId = newOwner._id;
+  await shop.save();
+
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: 'shop.transferOwnership',
+    entityType: 'shops',
+    entityId: shop._id,
+    before,
+    after: shop,
+    meta: { newOwnerId: newOwner._id, newOwnerBarberId: newOwnerBarber._id },
+  });
+  return { shop, barber: newOwnerBarber };
+}
+
+/** فهرست همه آرایشگاه‌ها برای پنل ادمین (شامل غیرفعال‌ها). */
+async function listAllShops({ city, isActive, page = 1, limit = 50 }) {
+  const query = {};
+  if (city) query.city = city;
+  if (isActive !== undefined) query.isActive = isActive;
+  const [rows, total] = await Promise.all([
+    Shop.find(query).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+    Shop.countDocuments(query),
+  ]);
+  return { rows, total, page, limit };
 }
 
 /** آرایشگران فعال یک آرایشگاه (با نام کاربر). */
@@ -119,16 +272,20 @@ async function setWorkingHours({ shopId, actor, workingHours }) {
   if (!shop) throw AppError.notFound('آرایشگاه یافت نشد');
   const before = shop.toObject();
 
-  shop.settings.workingHours = workingHours;
-  await shop.validate();
-
-  const conflicts = await findFutureAppointmentsOutsideHours(shop, before.settings?.workingHours);
+  // اول با ساعت کاری پیشنهادی بررسی می‌کنیم؛ اگر تداخل داشت، سند دست‌نخورده می‌ماند
+  const candidate = {
+    _id: shop._id,
+    settings: { ...settingsSnapshot(shop), workingHours },
+  };
+  const conflicts = await findFutureAppointmentsOutsideHours(candidate);
   if (conflicts.length > 0) {
     throw AppError.conflict('با این ساعت کاری، نوبت‌های موجود خارج از ساعت کاری می‌افتند', {
       conflictingAppointmentIds: conflicts.map((a) => a._id),
     });
   }
 
+  shop.settings.workingHours = workingHours;
+  await shop.validate();
   await shop.save();
   await auditService.record({
     actor: { userId: actor.userId, role: actor.role, shopId },
@@ -142,7 +299,7 @@ async function setWorkingHours({ shopId, actor, workingHours }) {
 }
 
 /** فهرست نوبت‌های آینده‌ای که با ساعت کاری جدید هم‌خوان نیستند. */
-async function findFutureAppointmentsOutsideHours(shop, previousWorkingHours = []) {
+async function findFutureAppointmentsOutsideHours(shop) {
   const Appointment = require('../models/Appointment');
   const { dayKeyTimeToDate, weekdayOfDayKey, toDayKey } = require('../helpers/time');
   const appointments = await Appointment.find({
@@ -178,14 +335,17 @@ async function addHoliday({ shopId, actor, date, note }) {
 
   const before = shop.toObject();
   const previous = shop.settings.holidays.map((h) => ({ date: h.date, note: h.note }));
-  shop.settings.holidays.push({ date, note: note ?? '' });
-  const conflicts = await findFutureAppointmentsOutsideHours(shop);
+  const nextHolidays = [...previous, { date, note: note ?? '' }];
+
+  const candidate = { _id: shop._id, settings: { ...settingsSnapshot(shop), holidays: nextHolidays } };
+  const conflicts = await findFutureAppointmentsOutsideHours(candidate);
   if (conflicts.length > 0) {
     throw AppError.conflict('در این روز نوبت ثبت‌شده وجود دارد؛ ابتدا آن‌ها را جابه‌جا یا لغو کنید', {
       conflictingAppointmentIds: conflicts.map((a) => a._id),
     });
   }
 
+  shop.settings.holidays.push({ date, note: note ?? '' });
   await shop.save();
   await auditService.record({
     actor: { userId: actor.userId, role: actor.role, shopId },
@@ -224,6 +384,11 @@ module.exports = {
   getShopBySlug,
   getShopById,
   updateShop,
+  deactivateShop,
+  activateShop,
+  transferOwnership,
+  listAllShops,
+  countFutureAppointments,
   listBarbers,
   setWorkingHours,
   addHoliday,

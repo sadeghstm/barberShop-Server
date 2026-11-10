@@ -4,7 +4,8 @@ const shopService = require('../services/shop');
 const barberService = require('../services/barber');
 const catalogService = require('../services/catalog');
 const surveyService = require('../services/survey');
-const { priceView } = require('../helpers/serialize');
+const appointmentService = require('../services/appointment');
+const { priceView, appointmentView } = require('../helpers/serialize');
 const { AppError } = require('../helpers/AppError');
 
 /** POST /api/shops — مالک آرایشگاه جدید می‌سازد */
@@ -17,8 +18,8 @@ exports.create = async (req, res) => {
 exports.list = async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
-  const shops = await shopService.listShops({ city: req.query.city, page, limit });
-  res.json({ shops, page, limit });
+  const result = await shopService.listShops({ city: req.query.city, q: req.query.q, page, limit });
+  res.json({ shops: result.rows, total: result.total, page, limit });
 };
 
 /** GET /api/shops/:slug — پروفایل عمومی آرایشگاه */
@@ -74,7 +75,12 @@ exports.removeHoliday = async (req, res) => {
 /** GET /api/shops/:shopId/barbers — عمومی (صفحه رزرو) */
 exports.listBarbers = async (req, res) => {
   const barbers = await barberService.listShopBarbers(req.params.shopId);
-  res.json({ barbers: barbers.filter((b) => b.isActive) });
+  // مسیر عمومی است: شماره موبایل آرایشگر افشا نمی‌شود
+  res.json({
+    barbers: barbers
+      .filter((b) => b.isActive)
+      .map((b) => ({ id: b.id, displayName: b.displayName, isOwner: b.isOwner })),
+  });
 };
 
 /** GET /api/shops/:shopId/staff — پنل مالک (شامل غیرفعال‌ها) */
@@ -153,6 +159,23 @@ exports.surveyStats = async (req, res) => {
   shopService.assertShopAccess(req.params.shopId, req.auth);
   const stats = await surveyService.getSurveyStats({ shopId: req.params.shopId });
   res.json({ stats });
+};
+
+/** GET /api/shops/:shopId/appointments?from=&to=&status=&barberId=&page=&limit= — پنل مالک */
+exports.listAppointments = async (req, res) => {
+  shopService.assertShopAccess(req.params.shopId, req.auth);
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+  const result = await appointmentService.listShopAppointments({
+    shopId: req.params.shopId,
+    from: req.query.from,
+    to: req.query.to,
+    status: req.query.status,
+    barberId: req.query.barberId,
+    page,
+    limit,
+  });
+  res.json({ appointments: result.rows.map(appointmentView), total: result.total, page, limit });
 };
 
 /** GET /api/me/barber — پروفایل آرایشگر خودم */

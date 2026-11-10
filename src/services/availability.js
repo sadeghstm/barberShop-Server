@@ -14,10 +14,10 @@ const { GRID_MINUTES } = require('../constants/time');
 const { BLOCKING_STATUSES } = require('../constants/enums');
 const {
   weekdayOfDayKey,
-  hhmmToMinutes,
   dayKeyTimeToDate,
   addMinutes,
   overlaps,
+  tehranMinutesOfDay,
 } = require('../helpers/time');
 
 /**
@@ -73,7 +73,6 @@ function computeFreeSlots({ shop, dayKey, durationMinutes, appointments = [], no
     // اولین شروع روی شبکه ۵ دقیقه‌ای که >= max(interval.start, earliestStart) باشد
     let candidate = new Date(Math.max(interval.start.getTime(), earliestStart.getTime()));
     // گرد به بالا روی شبکه ۵ دقیقه‌ای (بر اساس دقیقه تهران)
-    const { tehranMinutesOfDay } = require('../helpers/time');
     const mod = tehranMinutesOfDay(candidate) % GRID_MINUTES;
     if (mod !== 0) candidate = addMinutes(candidate, GRID_MINUTES - mod);
 

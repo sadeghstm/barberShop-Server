@@ -16,6 +16,7 @@ const {
   APPOINTMENT_SOURCE,
   ONLINE_BLOCKING_STATUSES,
   PAYMENT_STATUS,
+  CATALOG_STATUS,
   REFUND_STATUS,
   REFUND_DESTINATION,
   WALLET_TX_TYPE,
@@ -23,13 +24,13 @@ const {
 const { ROLES, SYSTEM_ACTOR } = require('../constants/roles');
 const { AppError } = require('../helpers/AppError');
 const { toDayKey, addMinutes, overlaps, tehranMinutesOfDay, minutesToHhmm } = require('../helpers/time');
+const { GRID_MINUTES } = require('../constants/time');
 const { getGlobalSettings } = require('./settings');
 const { withBookingLock } = require('./lock');
 const { computeFreeSlots, findFirstWalkInSlot } = require('./availability');
 const walletService = require('./wallet');
 const { enqueueSms } = require('./smsQueue');
 const auditService = require('./audit');
-const { logger } = require('../helpers/logger');
 
 function assertObjectId(id, field) {
   if (!id || !mongoose.isValidObjectId(id)) {
@@ -59,7 +60,7 @@ async function getActiveBarberServiceOrFail(barberId, serviceId) {
     throw AppError.validation('این خدمت برای این آرایشگر فعال نیست');
   }
   const catalog = await ServiceCatalog.findById(serviceId);
-  if (!catalog || catalog.status !== 'active') {
+  if (!catalog || catalog.status !== CATALOG_STATUS.ACTIVE) {
     throw AppError.validation('این خدمت قابل رزرو نیست');
   }
   return bs;
@@ -96,6 +97,10 @@ async function getAvailability({ shopId, barberId, serviceId, dayKey }) {
   if (dayKey < toDayKey(now)) {
     return { slots: [], durationMinutes: bs.durationMinutes, price: bs.price };
   }
+  // حداکثر ۹۰ روز جلوتر؛ بیشتر از آن برای برنامه‌ریزی معنا ندارد
+  if (dayKey > toDayKey(addMinutes(now, 90 * 24 * 60))) {
+    throw AppError.validation('روز درخواستی بیش از ۹۰ روز جلوتر است');
+  }
   const appointments = await blockingAppointmentsForDay(barberId, dayKey, now);
   const slots = computeFreeSlots({
     shop,
@@ -128,7 +133,11 @@ async function createHold({ shopId, barberId, serviceId, customerId, bookedStart
     throw AppError.validation('نوبت نباید از پایان روز عبور کند');
   }
   if (start < addMinutes(now, settings.minBookingLeadMinutes)) {
-    throw AppError.validation('نوبت باید حداقل ۱۵ دقیقه بعد از الان باشد');
+    throw AppError.validation(`نوبت باید حداقل ${settings.minBookingLeadMinutes} دقیقه بعد از الان باشد`);
+  }
+  // زمان شروع روی شبکه ۵ دقیقه‌ای و بدون ثانیه/میلی‌ثانیه (۵.۱)
+  if (tehranMinutesOfDay(start) % GRID_MINUTES !== 0 || start.getSeconds() !== 0 || start.getMilliseconds() !== 0) {
+    throw AppError.validation('زمان شروع باید روی مضارب ۵ دقیقه باشد');
   }
 
   // آرایشگر/مالک نمی‌تواند در آرایشگاه خودش از خودش نوبت بگیرد (۵.۱)
@@ -178,6 +187,14 @@ async function createHold({ shopId, barberId, serviceId, customerId, bookedStart
       depositAmount,
       heldUntil,
     });
+    await auditService.record({
+      actor: { userId: customerId, role: ROLES.CUSTOMER, shopId },
+      action: 'appointment.hold',
+      entityType: 'appointments',
+      entityId: appointment._id,
+      after: appointment,
+      meta: { heldUntil: heldUntil.toISOString(), depositAmount },
+    });
     return appointment;
   });
 }
@@ -186,10 +203,21 @@ async function createHold({ shopId, barberId, serviceId, customerId, bookedStart
  * پرداخت شبیه‌سازی‌شده (بخش ۵.۶): موفق → «تایید شده» خودکار.
  * کیف پول می‌تواند بیعانه را کامل یا بخشی پوشش دهد.
  */
-async function confirmWithPayment({ appointmentId, customerId, idempotencyKey, useWallet = true }) {
+async function confirmWithPayment({ appointmentId, customerId, idempotencyKey, useWallet = true, simulateFailure = false }) {
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) throw AppError.notFound('نوبت یافت نشد');
   if (String(appointment.customerId) !== String(customerId)) throw AppError.forbidden();
+
+  const key = idempotencyKey ?? `pay:${appointment._id}`;
+  // ایدمپوتنسی: همان کلید پرداخت دوباره اثر نمی‌گذارد و همان نتیجه برگردانده می‌شود (۵.۶)
+  const existingPayment = await Payment.findOne({ idempotencyKey: key });
+  if (existingPayment) {
+    if (String(existingPayment.appointmentId) !== String(appointment._id)) {
+      throw AppError.conflict('این کلید پرداخت برای نوبت دیگری استفاده شده است');
+    }
+    return { appointment, payment: existingPayment, duplicated: true };
+  }
+
   if (appointment.status !== APPOINTMENT_STATUS.HELD) {
     throw AppError.conflict('این نوبت در وضعیت قابل پرداخت نیست');
   }
@@ -197,6 +225,34 @@ async function confirmWithPayment({ appointmentId, customerId, idempotencyKey, u
     appointment.status = APPOINTMENT_STATUS.EXPIRED;
     await appointment.save();
     throw AppError.conflict('نگه‌داشتن این نوبت منقضی شده است');
+  }
+
+  // درگاه شبیه‌سازی‌شده: می‌توان شکست را هم تست کرد؛ پرداخت ناموفق ⇒ نوبت منقضی و بازه آزاد (۵.۱)
+  if (simulateFailure) {
+    const failedPayment = await Payment.create({
+      appointmentId: appointment._id,
+      customerId,
+      amount: appointment.depositAmount,
+      walletAmount: 0,
+      gatewayAmount: appointment.depositAmount,
+      idempotencyKey: key,
+      status: PAYMENT_STATUS.FAILED,
+      failureReason: 'پرداخت شبیه‌سازی‌شده ناموفق بود',
+    });
+    const before = appointment.toObject();
+    appointment.status = APPOINTMENT_STATUS.EXPIRED;
+    appointment.heldUntil = null;
+    await appointment.save();
+    await auditService.record({
+      actor: { userId: customerId, role: ROLES.CUSTOMER, shopId: appointment.shopId },
+      action: 'appointment.paymentFailed',
+      entityType: 'appointments',
+      entityId: appointment._id,
+      before,
+      after: appointment,
+      meta: { paymentId: failedPayment._id },
+    });
+    return { appointment, payment: failedPayment, failed: true };
   }
 
   const deposit = appointment.depositAmount;
@@ -213,7 +269,7 @@ async function confirmWithPayment({ appointmentId, customerId, idempotencyKey, u
     amount: deposit,
     walletAmount,
     gatewayAmount,
-    idempotencyKey: idempotencyKey ?? `pay:${appointment._id}`,
+    idempotencyKey: key,
     status: PAYMENT_STATUS.SUCCEEDED,
     providerRef: `mock-${Date.now()}`,
     paidAt: new Date(),
@@ -245,14 +301,18 @@ async function confirmWithPayment({ appointmentId, customerId, idempotencyKey, u
     meta: { paymentId: payment._id, walletAmount, gatewayAmount },
   });
 
+  const customer = await require('../models/User').findById(customerId);
   await enqueueSms({
-    mobile: (await require('../models/User').findById(customerId))?.mobile,
+    mobile: customer?.mobile,
     event: 'appointment.confirmed',
-    data: { code: String(appointment._id).slice(-6), time: appointment.bookedStart.toISOString() },
+    data: {
+      code: String(appointment._id).slice(-6),
+      time: minutesToHhmm(tehranMinutesOfDay(appointment.bookedStart)),
+    },
     idempotencyKey: `sms:confirmed:${appointment._id}`,
   });
 
-  return { appointment, payment };
+  return { appointment, payment, duplicated: false };
 }
 
 /** ماشین وضعیت (بخش ۵.۲): فقط گذرهای مجاز و توسط نقش مجاز. */
@@ -286,6 +346,12 @@ async function recalculateEstimated({ barberId, dayKey, actor }) {
     status: { $in: ['confirmed', 'arrived', 'inProgress'] },
   }).sort({ bookedStart: 1 });
 
+  const shop = appointments.length > 0 ? await Shop.findById(appointments[0].shopId) : null;
+  const { workingIntervalsForDay } = require('./availability');
+  const workingEnds = shop ? workingIntervalsForDay(shop, dayKey).map((iv) => iv.end) : [];
+  const lastWorkingEnd = workingEnds.length > 0 ? new Date(Math.max(...workingEnds.map((d) => d.getTime()))) : null;
+  let warnedOvertime = false;
+
   let prevEnd = null;
   for (const appt of appointments) {
     const bookedStart = new Date(appt.bookedStart);
@@ -306,7 +372,7 @@ async function recalculateEstimated({ barberId, dayKey, actor }) {
         await enqueueSms({
           mobile: user?.mobile,
           event: 'appointment.delayed',
-          data: { time: newEstimatedStart.toISOString() },
+          data: { time: minutesToHhmm(tehranMinutesOfDay(newEstimatedStart)) },
           idempotencyKey: `sms:delayed:${appt._id}:${newEstimatedStart.toISOString()}`,
         });
       }
@@ -318,6 +384,34 @@ async function recalculateEstimated({ barberId, dayKey, actor }) {
         before,
         after: appt,
         meta: { diffMinutes },
+      });
+    }
+
+    // اگر زمان پیش‌بینی‌شده از ساعت کاری بگذرد، مالک هشدار می‌گیرد (۵.۴)
+    if (shop && lastWorkingEnd && newEstimatedEnd > lastWorkingEnd && !warnedOvertime) {
+      warnedOvertime = true;
+      const owner = await require('../models/User').findById(shop.ownerId);
+      await enqueueSms({
+        mobile: owner?.mobile,
+        event: 'shop.overtime',
+        data: {
+          text: `هشدار: زمان پیش‌بینی‌شده نوبت‌های امروز از ساعت کاری (${minutesToHhmm(
+            tehranMinutesOfDay(lastWorkingEnd),
+          )}) عبور کرده است.`,
+        },
+        idempotencyKey: `sms:overtime:${barberId}:${dayKey}:${lastWorkingEnd.toISOString()}:${newEstimatedEnd.toISOString()}`,
+      });
+      await auditService.record({
+        actor: { role: SYSTEM_ACTOR },
+        action: 'shop.overtimeWarning',
+        entityType: 'shops',
+        entityId: shop._id,
+        meta: {
+          barberId,
+          dayKey,
+          workingEnd: lastWorkingEnd.toISOString(),
+          estimatedEnd: newEstimatedEnd.toISOString(),
+        },
       });
     }
     prevEnd = new Date(appt.estimatedEnd);
@@ -408,6 +502,15 @@ async function markCompleted({ appointmentId, actor, finalPrice, paidInPerson = 
     }
   }
 
+  if (appt.customerId) {
+    const customer = await require('../models/User').findById(appt.customerId);
+    await enqueueSms({
+      mobile: customer?.mobile,
+      event: 'appointment.completed',
+      idempotencyKey: `sms:completed:${appt._id}`,
+    });
+  }
+
   await recalculateEstimated({ barberId: appt.barberId, dayKey: appt.dayKey, actor: { userId: actor.userId, role: actor.role, shopId: appt.shopId } });
   return appt;
 }
@@ -481,6 +584,14 @@ async function requestCancelByBarber({ appointmentId, actor }) {
     before,
     after: appt,
   });
+  if (appt.customerId) {
+    const customer = await require('../models/User').findById(appt.customerId);
+    await enqueueSms({
+      mobile: customer?.mobile,
+      event: 'appointment.cancelRequested',
+      idempotencyKey: `sms:cancel-request:${appt._id}:${appt.cancelRequest.requestedAt.toISOString()}`,
+    });
+  }
   return appt;
 }
 
@@ -528,6 +639,14 @@ async function decideCancelRequest({ appointmentId, customerId, accept }) {
     before,
     after: appt,
   });
+  if (appt.customerId) {
+    const customer = await require('../models/User').findById(appt.customerId);
+    await enqueueSms({
+      mobile: customer?.mobile,
+      event: accept ? 'appointment.cancelRequestAccepted' : 'appointment.cancelRequestRejected',
+      idempotencyKey: `sms:cancel-decision:${appt._id}`,
+    });
+  }
   if (accept) await recalculateEstimated({ barberId: appt.barberId, dayKey: appt.dayKey });
   return appt;
 }
@@ -541,6 +660,13 @@ async function createWalkIn({ shopId, barberId, serviceId, actor, walkInName, wa
   await getActiveBarberOrFail(barberId, shopId);
   const bs = await getActiveBarberServiceOrFail(barberId, serviceId);
   const now = new Date();
+
+  // اگر مشتری حساب‌دار انتخاب شد، باید فعال باشد
+  if (customerId) {
+    assertObjectId(customerId, 'مشتری');
+    const customer = await require('../models/User').findById(customerId);
+    if (!customer || !customer.isActive) throw AppError.notFound('مشتری یافت نشد');
+  }
 
   // حداکثر ۷ روز جلو را بررسی می‌کنیم
   for (let offset = 0; offset < 7; offset += 1) {
@@ -591,15 +717,30 @@ async function createWalkIn({ shopId, barberId, serviceId, actor, walkInName, wa
 /** عدم حضور خودکار (۵.۳): ۵ دقیقه بعد از زمان پیش‌بینی‌شده فعلی، مگر noShowHold. */
 async function markNoShows({ now = new Date() } = {}) {
   const settings = await getGlobalSettings();
+  // همه نوبت‌های تاییدشده‌ای که از مهلت گذشته‌اند؛ نگه‌داشتن تصمیم جداگانه بررسی می‌شود
   const candidates = await Appointment.find({
     status: APPOINTMENT_STATUS.CONFIRMED,
-    noShowHold: { $ne: true },
     estimatedStart: { $lte: addMinutes(now, -settings.noShowGraceMinutes) },
   });
+
   let count = 0;
   for (const appt of candidates) {
+    if (appt.noShowHold) {
+      // مهلت نگه‌داشتن تصمیم «تا شروع نوبت بعدی همان آرایشگر» است (۵.۳)
+      const next = await Appointment.findOne({
+        barberId: appt.barberId,
+        dayKey: appt.dayKey,
+        bookedStart: { $gt: appt.bookedStart },
+      }).sort({ bookedStart: 1 });
+      const nextStarted =
+        next &&
+        (['arrived', 'inProgress', 'completed'].includes(next.status) || new Date(next.bookedStart) <= now);
+      if (!nextStarted) continue; // هنوز مهلت دارد
+    }
+
     const before = appt.toObject();
     appt.status = APPOINTMENT_STATUS.NO_SHOW;
+    appt.noShowHold = false;
     await appt.save();
     await auditService.record({
       actor: { role: SYSTEM_ACTOR },
@@ -608,7 +749,7 @@ async function markNoShows({ now = new Date() } = {}) {
       entityId: appt._id,
       before,
       after: appt,
-      meta: { auto: true },
+      meta: { auto: true, holdExpired: Boolean(before.noShowHold) },
     });
     if (appt.customerId) {
       const user = await require('../models/User').findById(appt.customerId);
@@ -681,6 +822,132 @@ function assertBarberAccess(appointment, actor) {
   if (!isOwnShop) throw AppError.forbidden('این نوبت متعلق به آرایشگاه شما نیست');
 }
 
+/**
+ * لغو اجباری توسط ادمین (۵.۵: اگر مشتری به درخواست لغو پاسخ نداد، ادمین تصمیم می‌گیرد).
+ * بازگشت کامل بیعانه به کیف پول انجام می‌شود.
+ */
+async function forceCancelByAdmin({ appointmentId, actor, reason }) {
+  const appt = await Appointment.findById(appointmentId);
+  if (!appt) throw AppError.notFound('نوبت یافت نشد');
+  assertTransition(appt.status, APPOINTMENT_STATUS.CANCELLED);
+  if (!reason || String(reason).trim().length < 3) throw AppError.validation('دلیل لغو الزامی است');
+
+  const before = appt.toObject();
+  appt.status = APPOINTMENT_STATUS.CANCELLED;
+  appt.cancelledBy = actor.userId;
+  appt.cancelledAt = new Date();
+  if (appt.cancelRequest?.status === 'pending') {
+    appt.cancelRequest.status = 'accepted';
+    appt.cancelRequest.decidedAt = new Date();
+  }
+  await appt.save();
+
+  const payment = await Payment.findOne({ appointmentId: appt._id, status: PAYMENT_STATUS.SUCCEEDED });
+  if (payment && payment.amount > 0) {
+    let refund = await Refund.findOne({ idempotencyKey: `refund:admin-cancel:${appt._id}` });
+    if (!refund) {
+      refund = await Refund.create({
+        paymentId: payment._id,
+        appointmentId: appt._id,
+        customerId: appt.customerId,
+        amount: payment.amount,
+        destination: REFUND_DESTINATION.WALLET,
+        status: REFUND_STATUS.DONE,
+        reason: `لغو توسط ادمین: ${reason}`,
+        createdBy: actor.userId,
+        idempotencyKey: `refund:admin-cancel:${appt._id}`,
+      });
+      if (appt.customerId) {
+        await walletService.applyTransaction({
+          userId: appt.customerId,
+          type: WALLET_TX_TYPE.DEPOSIT_REFUND,
+          amount: refund.amount,
+          idempotencyKey: `wallet-refund:${refund._id}`,
+          refType: 'refunds',
+          refId: refund._id,
+        });
+      }
+    }
+  }
+
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: 'appointment.adminCancel',
+    entityType: 'appointments',
+    entityId: appt._id,
+    before,
+    after: appt,
+    meta: { reason },
+  });
+
+  if (appt.customerId) {
+    const customer = await require('../models/User').findById(appt.customerId);
+    await enqueueSms({
+      mobile: customer?.mobile,
+      event: 'appointment.cancelledByShop',
+      idempotencyKey: `sms:admin-cancel:${appt._id}`,
+    });
+  }
+  await recalculateEstimated({ barberId: appt.barberId, dayKey: appt.dayKey });
+  return appt;
+}
+
+/**
+ * برگرداندن «تکمیل شده» (۵.۲): فقط ادمین/سوپر ادمین، با ثبت دلیل و خنثی‌سازی پورسانت معرفی.
+ * نوبت به «تایید شده» برمی‌گردد تا آرایشگر بتواند دوباره آن را ببندد.
+ */
+async function revertCompletion({ appointmentId, actor, reason }) {
+  const appt = await Appointment.findById(appointmentId);
+  if (!appt) throw AppError.notFound('نوبت یافت نشد');
+  if (appt.status !== APPOINTMENT_STATUS.COMPLETED) throw AppError.conflict('فقط نوبت تکمیل‌شده قابل برگشت است');
+  if (!reason || String(reason).trim().length < 3) throw AppError.validation('دلیل برگشت الزامی است');
+
+  const before = appt.toObject();
+  const commission = await walletService.reverseCommissionForAppointment({ appointmentId: appt._id });
+
+  appt.status = APPOINTMENT_STATUS.CONFIRMED;
+  appt.finishedAt = null;
+  appt.finalPrice = null;
+  appt.paidInPerson = null;
+  await appt.save();
+
+  await auditService.record({
+    actor: { userId: actor.userId, role: actor.role },
+    action: 'appointment.revertCompletion',
+    entityType: 'appointments',
+    entityId: appt._id,
+    before,
+    after: appt,
+    meta: { reason, commissionReversed: Boolean(commission), commissionId: commission?._id ?? null },
+  });
+  await recalculateEstimated({ barberId: appt.barberId, dayKey: appt.dayKey, actor: { userId: actor.userId, role: actor.role, shopId: appt.shopId } });
+  return appt;
+}
+
+/**
+ * فهرست نوبت‌های یک آرایشگاه برای پنل مالک/ادمین.
+ * from/to روی dayKey (تهران) اعمال می‌شوند؛ dayKey رشته است، پس مقایسه رشته‌ای درست کار می‌کند.
+ */
+async function listShopAppointments({ shopId, from, to, status, barberId, page = 1, limit = 50 }) {
+  const query = { shopId };
+  if (status) query.status = status;
+  if (barberId) query.barberId = barberId;
+  if (from || to) {
+    query.dayKey = {};
+    if (from) query.dayKey.$gte = from;
+    if (to) query.dayKey.$lte = to;
+  }
+  const [rows, total] = await Promise.all([
+    Appointment.find(query)
+      .sort({ bookedStart: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Appointment.countDocuments(query),
+  ]);
+  return { rows, total, page, limit };
+}
+
 /** برنامه روز آرایشگر (تابلوی روز). */
 async function getDayBoard({ barberId, dayKey, actor }) {
   const barber = await Barber.findById(barberId);
@@ -709,6 +976,9 @@ module.exports = {
   decideCancelRequest,
   createWalkIn,
   markNoShows,
+  revertCompletion,
+  forceCancelByAdmin,
+  listShopAppointments,
   sendDueReminders,
   setNoShowHold,
   expireHolds,

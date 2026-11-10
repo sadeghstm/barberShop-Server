@@ -43,13 +43,14 @@
 | POST | `/send-otp` | `{ mobile }` | ارسال کد ۵ رقمی (در dev: `12345`) |
 | POST | `/verify` | `{ mobile, code }` | ورود/ثبت‌نام + ست‌کردن کوکی `token` |
 | POST | `/logout` | — | پاک‌کردن نشست |
-| GET | `/me` | — | کاربر جاری |
+| GET | `/me` | — | کاربر جاری (شامل `roles`، `shopId`، `barberId`) |
+| PATCH | `/profile` | `{ name }` | ویرایش نام نمایشی |
 
 ## آرایشگاه‌ها — `/api/shops`
 
 | متد | مسیر | دسترسی | توضیح |
 |---|---|---|---|
-| GET | `/` | عمومی | فهرست فعال؛ `?city=&page=&limit=` |
+| GET | `/` | عمومی | فهرست فعال؛ `?city=&q=&page=&limit=` (q = جستجوی نام) |
 | GET | `/slug/:slug` | عمومی | پروفایل عمومی با slug |
 | GET | `/id/:shopId` | واردشده + عضو | جزئیات (پنل) |
 | POST | `/` | واردشده | ساخت آرایشگاه؛ سازنده مالک می‌شود. `{ name, slug, city, address, phone, settings? }` |
@@ -69,6 +70,7 @@
 | DELETE | `/:shopId/barbers/:barberId/services/:serviceId` | عضو | غیرفعال‌سازی خدمت |
 | POST | `/:shopId/service-requests` | آرایشگر | `{ title, description? }` — درخواست خدمت جدید |
 | GET | `/:shopId/survey-stats` | عضو | آمار نظرسنجی آرایشگاه |
+| GET | `/:shopId/appointments` | عضو | فهرست نوبت‌ها؛ `?from=&to=` (dayKey تهران)، `status`، `barberId`، `page`، `limit` |
 
 > اگر `settings.showPricesToGuests = false` باشد، `price` در پاسخ‌های عمومی `null` است و فقط برای کاربر
 > واردشده برگردانده می‌شود.
@@ -91,7 +93,7 @@
 | POST | `/hold` | مشتری | `{ shopId, barberId, serviceId, start }` → نوبت `held` با `heldUntil` (۱۰ دقیقه) |
 | GET | `/mine` | مشتری | `?status=&page=&limit=` |
 | GET | `/:id` | صاحب نوبت / کارکنان shop / ادمین | جزئیات |
-| POST | `/:id/pay` | مشتری | `{ useWallet?, idempotencyKey? }` → پرداخت mock + `confirmed` |
+| POST | `/:id/pay` | مشتری | `{ useWallet?, idempotencyKey?, simulateFailure? }` → پرداخت mock + `confirmed` (با `simulateFailure: true` پرداخت ناموفق و `expired`) |
 | POST | `/:id/cancel` | مشتری | لغو؛ بیش از ۲ ساعت قبل ← بازگشت بیعانه به کیف پول |
 | POST | `/:id/cancel-request` | آرایشگر/مالک | ثبت درخواست لغو (نیازمند تصمیم مشتری) |
 | POST | `/:id/cancel-request/decide` | مشتری | `{ accept: true|false }` — موافقت ← لغو + بازگشت کامل |
@@ -127,6 +129,7 @@
 
 | متد | مسیر | دسترسی | توضیح |
 |---|---|---|---|
+| POST | `/admins` | **سوپر ادمین** | `{ mobile }` — ساخت ادمین (کاربر در صورت نبود ساخته می‌شود) |
 | GET | `/settings` | ادمین | تنظیمات سراسری |
 | PUT | `/settings` | **سوپر ادمین** | `depositPercent, noShowGraceMinutes, minBookingLeadMinutes, holdMinutes, delayNotifyThresholdMinutes, cancelRefundHoursBefore, referralCommissionPercent` |
 | GET | `/payments` | ادمین | `?status=` |
@@ -134,9 +137,19 @@
 | GET | `/refunds` | ادمین | فهرست بازگشت‌ها |
 | GET | `/users` | ادمین | `?q=` جستجوی موبایل |
 | PUT | `/users/:userId/roles` | **سوپر ادمین** | `{ roles: ["admin","customer"] }` |
+| PUT | `/users/:userId/active` | ادمین | `{ isActive: true|false }` — غیرفعال‌سازی ورود |
 | GET | `/users/:userId/wallet` | ادمین | موجودی + دفتر کل |
 | GET | `/audit-logs` | ادمین | `?entityType=&entityId=&action=&actorId=&page=&limit=` |
 | GET | `/stats` | ادمین | تعداد کاربران/نوبت‌ها/درآمد بیعانه |
+| GET | `/stats/daily` | ادمین | `?from=&to=` — آمار روزانه به تفکیک وضعیت و درآمد خدمات تکمیل‌شده |
+| GET | `/shops` | ادمین | `?city=&isActive=&page=&limit=` — همه آرایشگاه‌ها (شامل غیرفعال) |
+| POST | `/shops/:shopId/deactivate` | ادمین | `{ reason? }` — با بررسی نوبت‌های آینده |
+| POST | `/shops/:shopId/activate` | ادمین | فعال‌سازی دوباره |
+| POST | `/shops/:shopId/transfer-ownership` | **سوپر ادمین** | `{ newOwnerUserId }` |
+| GET | `/appointments` | ادمین | `?status=&shopId=&barberId=&customerId=&from=&to=&page=&limit=` |
+| GET | `/cancel-requests` | ادمین | درخواست‌های لغو در انتظار تصمیم مشتری |
+| POST | `/appointments/:id/cancel` | ادمین | `{ reason }` — لغو اجباری (مثلاً وقتی مشتری به درخواست لغو پاسخ نمی‌دهد) + بازگشت کامل بیعانه |
+| POST | `/appointments/:id/revert` | ادمین | `{ reason }` — برگشت «تکمیل شده» + خنثی‌سازی پورسانت |
 | POST | `/jobs/expire-holds` | ادمین | اجرای دستی پاک‌سازی موقت‌ها |
 | POST | `/jobs/no-show` | ادمین | اجرای دستی بررسی عدم حضور |
 
@@ -145,7 +158,7 @@
 | متد | مسیر | توضیح |
 |---|---|---|
 | GET | `/barber` | پروفایل آرایشگر جاری |
-| GET | `/referral` | کد معرف، تعداد دعوت‌شده، تاریخ پورسانت‌ها |
+| GET | `/referral` | کد و لینک معرفی، تعداد دعوت‌شده، مجموع پورسانت و تاریخ آن |
 | POST | `/referral/apply` | `{ code }` — فقط یک‌بار و فقط قبل از داشتن معرف |
 | GET | `/wallet` | موجودی + ۵۰ تراکنش آخر |
 

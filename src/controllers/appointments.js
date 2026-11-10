@@ -6,6 +6,7 @@ const shopService = require('../services/shop');
 const { appointmentView, priceView, timeView } = require('../helpers/serialize');
 const { DAY_KEY_PATTERN } = require('../constants/time');
 const { AppError } = require('../helpers/AppError');
+const { ROLES } = require('../constants/roles');
 
 function requireDayKey(value) {
   if (!DAY_KEY_PATTERN.test(String(value ?? ''))) throw AppError.validation('dayKey باید به شکل YYYY-MM-DD باشد');
@@ -58,6 +59,7 @@ exports.pay = async (req, res) => {
     customerId: req.auth.userId,
     idempotencyKey: req.body?.idempotencyKey,
     useWallet: req.body?.useWallet !== false,
+    simulateFailure: req.body?.simulateFailure === true,
   });
   res.json({
     appointment: appointmentView(appointment),
@@ -90,9 +92,9 @@ exports.getOne = async (req, res) => {
   const appointment = await Appointment.findById(req.params.id);
   if (!appointment) throw AppError.notFound('نوبت یافت نشد');
   const isOwner = String(appointment.customerId) === String(req.auth.userId);
-  const staffRoles = ['superAdmin', 'admin', 'shopOwner', 'barber'];
+  const staffRoles = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.SHOP_OWNER, ROLES.BARBER];
   const isStaff = req.auth.roles.some((r) => staffRoles.includes(r)) && String(req.auth.shopId) === String(appointment.shopId);
-  const isPlatform = req.auth.roles.includes('superAdmin') || req.auth.roles.includes('admin');
+  const isPlatform = req.auth.roles.includes(ROLES.SUPER_ADMIN) || req.auth.roles.includes(ROLES.ADMIN);
   if (!isOwner && !isStaff && !isPlatform) throw AppError.forbidden();
   res.json({ appointment: appointmentView(appointment) });
 };

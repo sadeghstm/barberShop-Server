@@ -46,6 +46,15 @@ function loadConfig(env = process.env) {
     return DEV_DEFAULTS[name];
   };
 
+  const smsProviders = ['mock', 'kavenegar'];
+  const smsProvider = env.SMS_PROVIDER || 'mock';
+  if (!smsProviders.includes(smsProvider)) {
+    errors.push(`SMS_PROVIDER must be one of: ${smsProviders.join(', ')}`);
+  }
+  if (smsProvider === 'kavenegar' && !env.SMS_API_KEY) {
+    errors.push('SMS_API_KEY is required when SMS_PROVIDER=kavenegar');
+  }
+
   const logLevel = env.LOG_LEVEL || (isTest ? 'silent' : isProd ? 'info' : 'debug');
   if (!LOG_LEVELS.includes(logLevel)) {
     errors.push(`LOG_LEVEL must be one of: ${LOG_LEVELS.join(', ')}`);
@@ -63,9 +72,15 @@ function loadConfig(env = process.env) {
     trustProxy: int('TRUST_PROXY', 0, { max: 10 }),
     shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 10000, { min: 1000 }),
     corsOrigin: env.CORS_ORIGIN || 'http://localhost:5173', // آدرس فرانت‌اند (Vue)
+    // آدرس عمومی برنامه برای ساخت لینک معرفی/اشتراک‌گذاری (پیش‌فرض: همان فرانت‌اند)
+    appBaseUrl: (env.APP_BASE_URL || env.CORS_ORIGIN || 'http://localhost:5173').replace(/\/$/, ''),
     sessionTtlDays: int('SESSION_TTL_DAYS', 7, { min: 1, max: 90 }),
     // کد ثابت OTP فقط در development/test (گام ۳ سند)؛ در production همیشه تصادفی است
     devOtpCode: isProd ? undefined : env.DEV_OTP_CODE || '12345',
+    // پیامک: mock در توسعه؛ kavenegar در production (بخش ۵.۹)
+    smsProvider,
+    smsApiKey: env.SMS_API_KEY ?? null,
+    smsSender: env.SMS_SENDER ?? null,
   };
 
   if (errors.length > 0) {

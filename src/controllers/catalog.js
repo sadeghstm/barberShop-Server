@@ -2,6 +2,9 @@
 
 const catalogService = require('../services/catalog');
 const surveyService = require('../services/survey');
+const shopService = require('../services/shop');
+const { priceView } = require('../helpers/serialize');
+const { AppError } = require('../helpers/AppError');
 
 /** GET /api/services — کاتالوگ سراسری (عمومی) */
 exports.listCatalog = async (req, res) => {
@@ -34,12 +37,21 @@ exports.archive = async (req, res) => {
 
 /** GET /api/shops/:shopId/barbers/:barberId/services */
 exports.listBarberServices = async (req, res) => {
+  const includeInactive = req.query.all === 'true';
+  if (includeInactive && !req.auth) throw new AppError('برای دیدن خدمات غیرفعال وارد شوید');
   const services = await catalogService.listBarberServices({
     barberId: req.params.barberId,
     shopId: req.params.shopId,
-    onlyActive: req.query.all === 'true' ? false : true,
+    onlyActive: !includeInactive,
   });
-  res.json({ services });
+  // ۵.۸: قیمت برای مهمان در خود API حذف می‌شود، نه فقط در رابط
+  const shop = await shopService.getShopById(req.params.shopId).catch(() => null);
+  res.json({
+    services: services.map((service) => ({
+      ...service,
+      price: priceView(service.price, { shop, authenticated: Boolean(req.auth) }),
+    })),
+  });
 };
 
 /** PUT /api/shops/:shopId/barbers/:barberId/services/:serviceId { price, durationMinutes, isActive } */

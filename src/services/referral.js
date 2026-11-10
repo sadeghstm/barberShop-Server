@@ -4,7 +4,9 @@
 // و بعد از ثبت قابل تغییر نیست. پورسانت در لحظه «تکمیل شده» به کیف پول معرف اضافه می‌شود.
 
 const User = require('../models/User');
+const Referral = require('../models/Referral');
 const WalletTransaction = require('../models/WalletTransaction');
+const { config } = require('../config');
 const { WALLET_TX_TYPE } = require('../constants/enums');
 const { AppError } = require('../helpers/AppError');
 const auditService = require('./audit');
@@ -22,8 +24,10 @@ async function getMyReferralInfo(userId) {
   }).lean();
   const totalCommission = commissions.reduce((sum, tx) => sum + (tx.amount > 0 ? tx.amount : 0), 0);
 
+  const base = (config.appBaseUrl || '').replace(/\/$/, '');
   return {
     referralCode: user.referralCode,
+    referralLink: base ? `${base}/register?ref=${user.referralCode}` : null,
     invitedCount,
     totalCommission,
     commissionHistory: commissions
@@ -48,6 +52,12 @@ async function applyReferralCode({ userId, code }) {
 
   user.referredBy = referrer._id;
   await user.save();
+
+  // ثبت پیوند معرفی (refereeId یکتاست، پس یک کاربر فقط یک معرف دارد)
+  const existingReferral = await Referral.findOne({ refereeId: user._id });
+  if (!existingReferral) {
+    await Referral.create({ referrerId: referrer._id, refereeId: user._id, code: normalized });
+  }
 
   await auditService.record({
     actor: { userId: user._id, role: 'customer' },
