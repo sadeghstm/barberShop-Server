@@ -6,9 +6,10 @@ const { redis } = require('../db/redis');
 const { AppError } = require('../helpers/AppError');
 const sms = require('./sms');
 
-const CODE_TTL_SECONDS = 120; // اعتبار کد
-const COOLDOWN_SECONDS = 60; // فاصله بین دو درخواست کد برای یک شماره
-const MAX_TRIES = 5; // تعداد حدس‌های نادرست مجاز برای هر کد
+// از .env خوانده می‌شود (رشته است، پس عدد می‌شود)؛ اگر نبود مقدار پیش‌فرض
+const CODE_TTL_SECONDS = Number(process.env.CODE_TTL_SECONDS) || 120; // اعتبار کد
+const COOLDOWN_SECONDS = Number(process.env.COOLDOWN_SECONDS) || 60; // فاصله بین دو درخواست کد
+const MAX_TRIES = Number(process.env.MAX_TRIES) || 5; // حدس‌های نادرست مجاز برای هر کد
 
 const keys = (mobile) => ({
   code: `otp:code:${mobile}`,
@@ -19,13 +20,14 @@ const keys = (mobile) => ({
 // کد خام در ردیس ذخیره نمی‌شود، فقط هش آن
 const hash = (code) => crypto.createHash('sha256').update(String(code)).digest();
 
+// در development کد ثابت است (config.devOtpCode)، در production تصادفی
 const generateCode = () => config.devOtpCode ?? String(crypto.randomInt(10000, 100000));
 
 /** کد تایید را می‌سازد و پیامک می‌کند. */
 async function send(mobile) {
   const k = keys(mobile);
 
-  // NX: فقط اگر کلید نبود ساخته می‌شود؛ پس دو درخواست هم‌زمان هر دو رد نمی‌شوند و هر دو عبور هم نمی‌کنند
+  // NX: فقط اگر کلید نبود ساخته می‌شود؛ دو درخواست هم‌زمان هر دو عبور نمی‌کنند
   const acquired = await redis.set(k.cooldown, '1', 'EX', COOLDOWN_SECONDS, 'NX');
   if (!acquired) {
     const wait = Math.max(await redis.ttl(k.cooldown), 1);
