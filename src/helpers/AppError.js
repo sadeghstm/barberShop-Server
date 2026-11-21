@@ -32,8 +32,13 @@ class AppError extends Error {
     return new AppError(message, { statusCode: 404, code: 'NOT_FOUND' });
   }
 
-  static conflict(message = 'تداخل با وضعیت فعلی', details) {
-    return new AppError(message, { statusCode: 409, code: 'CONFLICT', details });
+  // code اختیاری است تا فرانت‌اند بین انواع تداخل فرق بگذارد (مثل SLOT_UNAVAILABLE)
+  static conflict(message = 'تداخل با وضعیت فعلی', details, code = 'CONFLICT') {
+    return new AppError(message, { statusCode: 409, code, details });
+  }
+
+  static paymentFailed(message = 'پرداخت ناموفق بود') {
+    return new AppError(message, { statusCode: 402, code: 'PAYMENT_FAILED' });
   }
 
   static tooManyRequests(message = 'تعداد درخواست‌ها زیاد است؛ کمی بعد دوباره تلاش کنید') {

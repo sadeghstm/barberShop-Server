@@ -34,11 +34,11 @@ const holidaySchema = new Schema(
   { _id: false },
 );
 
+// مالک آرایشگاه جدا ذخیره نمی‌شود: او یک سند Barber با isOwner=true است (مدل Barber).
 const shopSchema = new Schema(
   {
     name: { type: String, required: true, trim: true, minlength: 2, maxlength: 100 },
     slug: { type: String, required: true, trim: true, lowercase: true, match: /^[a-z0-9][a-z0-9-]{1,60}$/ },
-    ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     city: { type: String, trim: true, maxlength: 60, default: '' },
     address: { type: String, trim: true, maxlength: 300, default: '' },
     phone: { type: String, trim: true, maxlength: 20, default: '' },
@@ -67,7 +67,6 @@ const shopSchema = new Schema(
 );
 
 shopSchema.index({ slug: 1 }, { unique: true });
-shopSchema.index({ ownerId: 1 });
 shopSchema.index({ isActive: 1, city: 1 });
 
 module.exports = mongoose.models.Shop || mongoose.model('Shop', shopSchema);

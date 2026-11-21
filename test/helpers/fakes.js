@@ -68,6 +68,7 @@ function createFakeRedis() {
       let nx = false;
       for (let i = 0; i < opts.length; i += 1) {
         if (opts[i] === 'EX') ex = opts[(i += 1)];
+        if (opts[i] === 'PX') ex = opts[(i += 1)] / 1000;
         if (opts[i] === 'NX') nx = true;
       }
       if (nx && fake._live(key)) return null;
@@ -79,6 +80,12 @@ function createFakeRedis() {
     },
     async del(...keys) {
       return keys.filter((k) => store.delete(k)).length;
+    },
+    // فقط اسکریپت آزادسازی قفل (حذف کلید اگر مقدارش برابر token باشد) شبیه‌سازی می‌شود
+    async eval(script, numKeys, key, token) {
+      if (fake._live(key)?.value !== token) return 0;
+      store.delete(key);
+      return 1;
     },
     async incr(key) {
       const e = fake._live(key);
@@ -108,4 +115,31 @@ function stubModule(pathFromSrc, exports) {
   require.cache[file] = { id: file, filename: file, loaded: true, exports, children: [], paths: [] };
 }
 
-module.exports = { createFakeRes, createFakeReq, mockLogger, createFakeRedis, stubModule };
+/**
+ * مثل stubModule برای چند ماژول، ولی تمیز: سرویس‌ها/مدل‌هایی که قبلاً بارگذاری شده‌اند موقتاً کنار می‌روند
+ * (تا نسخه‌ی تازه با ماژول‌های ساختگی بارگذاری شود) و restore() همه‌چیز را سر جایش برمی‌گرداند.
+ * برای فایل‌هایی که همراه فایل‌های دیگر در یک فرایند mocha اجرا می‌شوند:
+ *   before(() => { restore = isolateModules({ 'db/redis': {...} }); service = require('../../src/services/x'); });
+ *   after(() => restore());
+ */
+function isolateModules(stubs = {}) {
+  const path = require('node:path');
+  const src = path.join(__dirname, '../../src');
+  const dirs = ['services', 'models', 'controllers', 'db', 'middlewares', 'jobs'].map((d) => path.join(src, d) + path.sep);
+  const isolated = (file) => dirs.some((d) => file.startsWith(d));
+
+  const saved = new Map();
+  for (const file of Object.keys(require.cache)) {
+    if (!isolated(file)) continue;
+    saved.set(file, require.cache[file]);
+    delete require.cache[file];
+  }
+  for (const [pathFromSrc, exports] of Object.entries(stubs)) stubModule(pathFromSrc, exports);
+
+  return function restore() {
+    for (const file of Object.keys(require.cache)) if (isolated(file)) delete require.cache[file];
+    for (const [file, entry] of saved) require.cache[file] = entry;
+  };
+}
+
+module.exports = { createFakeRes, createFakeReq, mockLogger, createFakeRedis, stubModule, isolateModules };

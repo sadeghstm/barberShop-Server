@@ -1,7 +1,7 @@
 'use strict';
 
-const fs = require('node:fs');
 const path = require('node:path');
+const dotenv = require('dotenv');
 
 const NODE_ENVS = ['development', 'test', 'production'];
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'];
@@ -74,11 +74,11 @@ function loadConfig(env = process.env) {
   return Object.freeze(config);
 }
 
-// .env (اگر بود) خوانده می‌شود؛ متغیرهای محیطِ از پیش تنظیم‌شده را بازنویسی نمی‌کند
-const envFile = path.resolve(__dirname, '../.env');
-if (process.env.NODE_ENV !== 'test' && fs.existsSync(envFile)) {
-  process.loadEnvFile(envFile);
-}
+// متغیرها از فایل .env خوانده می‌شوند (در تست‌ها از .env.test). متغیرهای محیطِ از پیش تنظیم‌شده بازنویسی نمی‌شوند.
+dotenv.config({
+  path: path.resolve(__dirname, '..', process.env.NODE_ENV === 'test' ? '.env.test' : '.env'),
+  quiet: true,
+});
 
 // در بقیه برنامه فقط:  const { config } = require('./config')
 module.exports = { config: loadConfig(process.env), loadConfig };

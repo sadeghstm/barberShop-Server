@@ -4,6 +4,9 @@ const { config } = require('./config');
 const { logger } = require('./helpers/logger');
 const { connectMongo, disconnectMongo } = require('./db/mongo');
 const { connectRedis, closeRedis } = require('./db/redis');
+const { startExpireHoldsJob } = require('./jobs/expireHolds');
+const { startMarkNoShowsJob } = require('./jobs/markNoShows');
+const { startArchiveServicesJob } = require('./jobs/archiveServices');
 const app = require('./app');
 
 async function main() {
@@ -13,6 +16,8 @@ async function main() {
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port, env: config.env }, 'server listening');
   });
+
+  const stopJobs = [startExpireHoldsJob(), startMarkNoShowsJob(), startArchiveServicesJob()];
 
   // خاموشی تمیز: اول درخواست‌های در حال انجام تمام می‌شوند، بعد اتصال‌ها بسته می‌شوند
   let shuttingDown = false;
@@ -28,6 +33,7 @@ async function main() {
     forceTimer.unref();
 
     try {
+      stopJobs.forEach((stop) => stop());
       await new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
         server.closeIdleConnections?.();

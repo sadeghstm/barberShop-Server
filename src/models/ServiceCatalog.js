@@ -22,7 +22,7 @@ function normalizeTitle(title) {
 const serviceCatalogSchema = new Schema(
   {
     title: { type: String, required: true, trim: true, minlength: 2, maxlength: 80 },
-    titleKey: { type: String, required: true, immutable: true }, // normalizeTitle(title)، برای یکتایی
+    titleKey: { type: String, required: true }, // normalizeTitle(title)، برای یکتایی؛ با هر تغییر عنوان دوباره ساخته می‌شود
     description: { type: String, trim: true, maxlength: 500, default: '' },
     status: { type: String, enum: CATALOG_STATUSES, default: CATALOG_STATUS.ACTIVE },
     isDefault: { type: Boolean, default: false }, // از پیش تعریف‌شده (seed) در برابر ساخته‌شده با درخواست آرایشگر
@@ -35,7 +35,7 @@ const serviceCatalogSchema = new Schema(
 );
 
 serviceCatalogSchema.pre('validate', function setKey() {
-  if (this.isNew) this.titleKey = normalizeTitle(this.title);
+  if (this.isNew || this.isModified('title')) this.titleKey = normalizeTitle(this.title);
 });
 
 serviceCatalogSchema.index({ titleKey: 1 }, { unique: true });

@@ -2,38 +2,48 @@
 
 const { ROLES } = require('../constants/roles');
 const { AppError } = require('../helpers/AppError');
-const { resolveRoles, primaryRole } = require('../helpers/roles');
+const { resolveRoles, primaryRole, isPlatformStaff } = require('../helpers/roles');
 const sessionService = require('../services/session');
 const User = require('../models/User');
 const Barber = require('../models/Barber');
 
 const COOKIE_NAME = 'token';
 
-/**
- * کاربر واردشده را از روی کوکی پیدا می‌کند و می‌گذارد:
- *   req.auth = { userId, mobile, name, role, roles, shopId, barberId }
- * role نقش اصلی است (برای auditLogs). shopId/barberId فقط برای آرایشگر و مالک پر است.
- */
-async function authenticate(req, res, next) {
+/** کاربر واردشده را از روی کوکی می‌سازد: { userId, mobile, name, role, roles, shopId, barberId }؛ بدون ورود معتبر → null */
+async function loadAuth(req) {
   const userId = await sessionService.getUserId(req.cookies?.[COOKIE_NAME]);
-  if (!userId) throw AppError.unauthorized();
+  if (!userId) return null;
 
   const [user, barber] = await Promise.all([
     User.findById(userId),
     Barber.findOne({ userId, isActive: true }),
   ]);
-  if (!user || !user.isActive) throw AppError.unauthorized();
+  if (!user || !user.isActive) return null;
 
   const roles = resolveRoles(user, barber);
-  req.auth = {
+  return {
     userId: user._id,
     mobile: user.mobile,
     name: user.name,
-    role: primaryRole(roles),
+    role: primaryRole(roles), // نقش اصلی (برای auditLogs)
     roles,
-    shopId: barber ? barber.shopId : null,
+    shopId: barber ? barber.shopId : null, // فقط برای آرایشگر و مالک
     barberId: barber ? barber._id : null,
   };
+}
+
+/** ورود الزامی است؛ نتیجه در req.auth */
+async function authenticate(req, res, next) {
+  const auth = await loadAuth(req);
+  if (!auth) throw AppError.unauthorized();
+  req.auth = auth;
+  next();
+}
+
+/** ورود اختیاری است (مسیرهای عمومی که برای کاربر واردشده چیز بیشتری نشان می‌دهند، مثل قیمت). req.auth یا هست یا نیست. */
+async function optionalAuthenticate(req, res, next) {
+  const auth = await loadAuth(req);
+  if (auth) req.auth = auth;
   next();
 }
 
@@ -55,11 +65,10 @@ function requireRole(...allowed) {
  */
 function requireShopAccess(paramName = 'shopId') {
   return (req, res, next) => {
-    const isPlatformStaff = req.auth.roles.includes(ROLES.SUPER_ADMIN) || req.auth.roles.includes(ROLES.ADMIN);
     const isMemberOfShop = req.auth.shopId && String(req.auth.shopId) === req.params[paramName];
-    if (!isPlatformStaff && !isMemberOfShop) throw AppError.forbidden();
+    if (!isPlatformStaff(req.auth.roles) && !isMemberOfShop) throw AppError.forbidden();
     next();
   };
 }
 
-module.exports = { COOKIE_NAME, authenticate, requireRole, requireShopAccess };
+module.exports = { COOKIE_NAME, authenticate, optionalAuthenticate, requireRole, requireShopAccess };

@@ -67,6 +67,6 @@ exports.logout = async (req, res) => {
 
 /** GET /api/auth/me — اطلاعات کاربر واردشده (برای فرانت‌اند) */
 exports.me = (req, res) => {
-  const { userId, mobile, name, role, roles, shopId } = req.auth;
-  res.json({ user: { id: userId, mobile, name, role, roles, shopId } });
+  const { userId, mobile, name, role, roles, shopId, barberId } = req.auth;
+  res.json({ user: { id: userId, mobile, name, role, roles, shopId, barberId } });
 };

@@ -22,4 +22,9 @@ function primaryRole(roles) {
   return ROLE_PRIORITY.find((role) => roles.includes(role)) ?? ROLES.CUSTOMER;
 }
 
-module.exports = { resolveRoles, primaryRole };
+/** ادمین یا سوپر ادمین (کارکنان پلتفرم، نه یک آرایشگاه خاص) */
+function isPlatformStaff(roles) {
+  return roles.includes(ROLES.SUPER_ADMIN) || roles.includes(ROLES.ADMIN);
+}
+
+module.exports = { resolveRoles, primaryRole, isPlatformStaff };

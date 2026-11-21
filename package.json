@@ -11,13 +11,19 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "create-superadmin": "node scripts/createSuperAdmin.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "seed-services": "node scripts/seedServices.js",
+    "test": "node scripts/test.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
+    "dotenv": "^17.2.0",
     "express": "^5.1.0",
     "ioredis": "^5.4.1",
     "mongoose": "^8.9.0"
+  },
+  "devDependencies": {
+    "mocha": "^11.7.0",
+    "supertest": "^7.1.0"
   }
 }
